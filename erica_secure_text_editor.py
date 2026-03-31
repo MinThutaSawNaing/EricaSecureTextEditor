@@ -1018,17 +1018,47 @@ class MainWindow(QMainWindow):
                 background-color: #1e1e1e;
                 color: #ffffff;
             }}
-            QTextEdit {{
+            QTextBrowser {{
                 background-color: #252526;
                 color: #d4d4d4;
                 border: 1px solid #444;
             }}
-            QMenuBar, QMenu, QStatusBar {{
+            QMenuBar, QStatusBar {{
                 background-color: #2d2d30;
                 color: #ccc;
             }}
+            QMenuBar::item {{
+                background: transparent;
+                color: #ccc;
+                padding: 6px 12px;
+                margin: 2px 4px;
+                border-radius: 4px;
+            }}
+            QMenuBar::item:selected {{
+                background-color: #3a3a3d;
+            }}
+            QMenuBar::item:pressed {{
+                background-color: #444;
+            }}
+            QMenu {{
+                background-color: #2d2d30;
+                color: #ccc;
+                border: 1px solid #444;
+                padding: 6px;
+            }}
+            QMenu::item {{
+                padding: 8px 28px 8px 12px;
+                margin: 2px 4px;
+                border-radius: 4px;
+            }}
             QMenu::item:selected {{
                 background-color: #444;
+                color: #ffffff;
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: #555;
+                margin: 6px 8px;
             }}
             QTabWidget::pane {{
                 border: 1px solid #444;
@@ -1061,17 +1091,47 @@ class MainWindow(QMainWindow):
                 background-color: #f0f0f0;
                 color: #333333;
             }
-            QTextEdit {
+            QTextBrowser {
                 background-color: #ffffff;
                 color: #000000;
                 border: 1px solid #ccc;
             }
-            QMenuBar, QMenu, QStatusBar {
+            QMenuBar, QStatusBar {
                 background-color: #e0e0e0;
                 color: #333;
             }
+            QMenuBar::item {
+                background: transparent;
+                color: #333;
+                padding: 6px 12px;
+                margin: 2px 4px;
+                border-radius: 4px;
+            }
+            QMenuBar::item:selected {
+                background-color: #ddd;
+            }
+            QMenuBar::item:pressed {
+                background-color: #d0d0d0;
+            }
+            QMenu {
+                background-color: #ffffff;
+                color: #333;
+                border: 1px solid #ccc;
+                padding: 6px;
+            }
+            QMenu::item {
+                padding: 8px 28px 8px 12px;
+                margin: 2px 4px;
+                border-radius: 4px;
+            }
             QMenu::item:selected {
                 background-color: #ddd;
+                color: #000;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #ccc;
+                margin: 6px 8px;
             }
             QTabWidget::pane {
                 border: 1px solid #ccc;
@@ -1139,6 +1199,7 @@ class MainWindow(QMainWindow):
     # Menu Initialization
     def init_menu(self):
         menubar = self.menuBar()
+        menubar.setNativeMenuBar(False)
 
         # File Menu
         file_menu = menubar.addMenu("File")
