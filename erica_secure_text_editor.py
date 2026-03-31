@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QProgressBar, QPushButton, QTabWidget, QTextBrowser
 )
 from PyQt6.QtGui import QFont, QIcon, QAction, QTextCharFormat, QTextCursor, QTextListFormat, QTextBlockFormat, QBrush, QColor, QDesktopServices
-from PyQt6.QtGui import QTextDocumentFragment, QTextTableFormat, QTextFrameFormat
+from PyQt6.QtGui import QTextDocumentFragment, QTextTableFormat, QTextFrameFormat, QTextTableCellFormat, QTextLength
 from PyQt6.QtCore import Qt, QTimer, QUrl, QMimeData
 
 # Constants
@@ -479,6 +479,18 @@ class MainWindow(QMainWindow):
 
         return table, table.cellAt(cursor)
 
+    def get_current_table_selection(self):
+        table, _ = self.get_current_table()
+        if table is None:
+            return None
+
+        cursor = self.current_editor.textCursor()
+        start = max(table.firstPosition() - 1, 0)
+        end = table.lastPosition() + 1
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        return cursor
+
     def insert_table_row_above(self):
         table, cell = self.get_current_table()
         if table is None:
@@ -525,6 +537,87 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Table", "A table must keep at least one column.")
             return
         table.removeColumns(cell.column(), 1)
+        self.current_editor.document().setModified(True)
+
+    def copy_current_table(self):
+        selection_cursor = self.get_current_table_selection()
+        if selection_cursor is None:
+            return
+
+        fragment = QTextDocumentFragment(selection_cursor)
+        mime_data = QMimeData()
+        mime_data.setHtml(fragment.toHtml())
+        mime_data.setText(selection_cursor.selectedText())
+        QApplication.clipboard().setMimeData(mime_data)
+        self.clipboard_clear_timer.start(CLIPBOARD_CLEAR_TIME)
+        QMessageBox.information(self, "Table", "Table copied. Paste it anywhere in the document.")
+
+    def cut_current_table(self):
+        selection_cursor = self.get_current_table_selection()
+        if selection_cursor is None:
+            return
+
+        fragment = QTextDocumentFragment(selection_cursor)
+        mime_data = QMimeData()
+        mime_data.setHtml(fragment.toHtml())
+        mime_data.setText(selection_cursor.selectedText())
+        QApplication.clipboard().setMimeData(mime_data)
+        selection_cursor.removeSelectedText()
+        self.current_editor.setTextCursor(selection_cursor)
+        self.current_editor.document().setModified(True)
+        self.clipboard_clear_timer.start(CLIPBOARD_CLEAR_TIME)
+        QMessageBox.information(self, "Table", "Table cut. Move the cursor and paste it wherever you want.")
+
+    def resize_current_column(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+
+        width, ok = QInputDialog.getInt(self, "Resize Column", "Column width (px):", 140, 40, 800)
+        if not ok:
+            return
+
+        table_format = table.format()
+        constraints = list(table_format.columnWidthConstraints())
+        while len(constraints) < table.columns():
+            constraints.append(QTextLength(QTextLength.Type.FixedLength, 140))
+        constraints[cell.column()] = QTextLength(QTextLength.Type.FixedLength, width)
+        table_format.setColumnWidthConstraints(constraints)
+        table.setFormat(table_format)
+        self.current_editor.document().setModified(True)
+
+    def resize_current_row_height(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+
+        height, ok = QInputDialog.getInt(self, "Resize Row", "Row height (px):", 28, 18, 300)
+        if not ok:
+            return
+
+        for column in range(table.columns()):
+            row_cell = table.cellAt(cell.row(), column)
+            block_cursor = row_cell.firstCursorPosition()
+            block_format = block_cursor.blockFormat()
+            block_format.setLineHeight(height, QTextBlockFormat.LineHeightTypes.FixedHeight.value)
+            block_cursor.setBlockFormat(block_format)
+        self.current_editor.document().setModified(True)
+
+    def resize_current_cell_padding(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+
+        padding, ok = QInputDialog.getInt(self, "Resize Cell", "Cell padding (px):", 6, 0, 40)
+        if not ok:
+            return
+
+        cell_format = cell.format().toTableCellFormat()
+        cell_format.setTopPadding(padding)
+        cell_format.setBottomPadding(padding)
+        cell_format.setLeftPadding(padding)
+        cell_format.setRightPadding(padding)
+        cell.setFormat(cell_format)
         self.current_editor.document().setModified(True)
 
 # Proper insert_link implementation
@@ -1448,6 +1541,16 @@ class MainWindow(QMainWindow):
 
         table_menu.addSeparator()
 
+        copy_table_action = QAction("Copy Current Table", self)
+        copy_table_action.triggered.connect(self.copy_current_table)
+        table_menu.addAction(copy_table_action)
+
+        cut_table_action = QAction("Cut Current Table", self)
+        cut_table_action.triggered.connect(self.cut_current_table)
+        table_menu.addAction(cut_table_action)
+
+        table_menu.addSeparator()
+
         insert_row_above_action = QAction("Insert Row Above", self)
         insert_row_above_action.triggered.connect(self.insert_table_row_above)
         table_menu.addAction(insert_row_above_action)
@@ -1473,6 +1576,20 @@ class MainWindow(QMainWindow):
         delete_column_action = QAction("Delete Current Column", self)
         delete_column_action.triggered.connect(self.delete_table_column)
         table_menu.addAction(delete_column_action)
+
+        table_menu.addSeparator()
+
+        resize_column_action = QAction("Resize Current Column", self)
+        resize_column_action.triggered.connect(self.resize_current_column)
+        table_menu.addAction(resize_column_action)
+
+        resize_row_action = QAction("Resize Current Row", self)
+        resize_row_action.triggered.connect(self.resize_current_row_height)
+        table_menu.addAction(resize_row_action)
+
+        resize_cell_action = QAction("Resize Current Cell", self)
+        resize_cell_action.triggered.connect(self.resize_current_cell_padding)
+        table_menu.addAction(resize_cell_action)
 
         # Links
         format_menu.addSeparator()
