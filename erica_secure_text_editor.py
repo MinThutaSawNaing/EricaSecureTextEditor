@@ -1,17 +1,12 @@
 # Erica Secure Text Editor v3.1 – With Font Size Controls (Tested & Working)
-import sys, os, json, base64, secrets, time, datetime, re, hmac
+import sys, os, json, secrets, re, hmac
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QTextEdit, QFileDialog, QInputDialog,
-    QMessageBox, QLineEdit, QMenu, QMenuBar, QStatusBar, QLabel, QDialog,
-    QVBoxLayout, QProgressBar, QPushButton, QTabWidget, QWidget, QTextBrowser
+    QApplication, QMainWindow, QFileDialog, QInputDialog,
+    QMessageBox, QLineEdit, QStatusBar, QLabel, QDialog,
+    QVBoxLayout, QProgressBar, QPushButton, QTabWidget, QTextBrowser
 )
-from PyQt6.QtGui import QFont, QIcon, QClipboard, QAction, QTextCharFormat, QTextCursor, QTextListFormat, QTextBlockFormat, QBrush, QColor, QDesktopServices
+from PyQt6.QtGui import QFont, QIcon, QAction, QTextCharFormat, QTextCursor, QTextListFormat, QTextBlockFormat, QBrush, QColor, QDesktopServices
 from PyQt6.QtCore import Qt, QTimer, QUrl
-
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import padding, hashes, hmac as crypto_hmac
-from cryptography.hazmat.backends import default_backend
 
 # Constants
 def ensure_windows_supported():
@@ -31,6 +26,7 @@ CONFIG_FILE = os.path.join(CONFIG_PATH, 'config.json')
 DEFAULT_TIMEOUT = 60 * 60  # 1 hour
 CLIPBOARD_CLEAR_TIME = 300 * 1000  # 5 minutes in milliseconds
 DEFAULT_FONT_SIZE = 12
+_CRYPTO_CACHE = None
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -42,27 +38,57 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def get_crypto():
+    global _CRYPTO_CACHE
+    if _CRYPTO_CACHE is None:
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.primitives import padding, hashes, hmac as crypto_hmac
+        from cryptography.hazmat.backends import default_backend
+
+        _CRYPTO_CACHE = {
+            "PBKDF2HMAC": PBKDF2HMAC,
+            "Cipher": Cipher,
+            "algorithms": algorithms,
+            "modes": modes,
+            "padding": padding,
+            "hashes": hashes,
+            "crypto_hmac": crypto_hmac,
+            "default_backend": default_backend,
+        }
+    return _CRYPTO_CACHE
+
+
 
 # Cryptography Functions
 def derive_key(password: str, salt: bytes) -> bytes:
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(), length=32, salt=salt,
-        iterations=100_000, backend=default_backend()
+    crypto = get_crypto()
+    kdf = crypto["PBKDF2HMAC"](
+        algorithm=crypto["hashes"].SHA256(), length=32, salt=salt,
+        iterations=100_000, backend=crypto["default_backend"]()
     )
     return kdf.derive(password.encode())
 
 def compute_hmac(key: bytes, data: bytes) -> bytes:
-    h = crypto_hmac.HMAC(key, hashes.SHA256(), backend=default_backend())
-    h.update(data)
-    return h.finalize()
+    crypto = get_crypto()
+    signer = crypto["crypto_hmac"].HMAC(
+        key, crypto["hashes"].SHA256(), backend=crypto["default_backend"]()
+    )
+    signer.update(data)
+    return signer.finalize()
 
 def encrypt_text(plain: str, password: str) -> bytes:
+    crypto = get_crypto()
     salt = secrets.token_bytes(16)
     iv = secrets.token_bytes(16)
     key = derive_key(password, salt)
-    padder = padding.PKCS7(128).padder()
+    padder = crypto["padding"].PKCS7(128).padder()
     padded = padder.update(plain.encode()) + padder.finalize()
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    cipher = crypto["Cipher"](
+        crypto["algorithms"].AES(key),
+        crypto["modes"].CBC(iv),
+        backend=crypto["default_backend"](),
+    )
     encryptor = cipher.encryptor()
     encrypted = encryptor.update(padded) + encryptor.finalize()
     full_data = salt + iv + encrypted
@@ -70,6 +96,7 @@ def encrypt_text(plain: str, password: str) -> bytes:
     return full_data + tag
 
 def decrypt_text(data: bytes, password: str) -> str:
+    crypto = get_crypto()
     if len(data) < 48:
         raise ValueError("Data too short to be valid.")
     salt, iv = data[:16], data[16:32]
@@ -79,10 +106,14 @@ def decrypt_text(data: bytes, password: str) -> str:
     expected_tag = compute_hmac(key, salt + iv + encrypted)
     if not hmac.compare_digest(tag, expected_tag):
         raise IntegrityError("Integrity check failed.")
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    cipher = crypto["Cipher"](
+        crypto["algorithms"].AES(key),
+        crypto["modes"].CBC(iv),
+        backend=crypto["default_backend"](),
+    )
     decryptor = cipher.decryptor()
     padded = decryptor.update(encrypted) + decryptor.finalize()
-    unpadder = padding.PKCS7(128).unpadder()
+    unpadder = crypto["padding"].PKCS7(128).unpadder()
     return (unpadder.update(padded) + unpadder.finalize()).decode()
 
 # Config Management
@@ -204,10 +235,11 @@ class MainWindow(QMainWindow):
     def __init__(self, initial_file=None):
         super().__init__()
         self.setWindowTitle("Erica Secure Text Editor 3.1")
-        self.setWindowIcon(QIcon(resource_path("icon.ico")))
+        self.app_icon = QIcon(resource_path("icon.ico"))
+        self.setWindowIcon(self.app_icon)
         self.resize(1000, 650)
         app = QApplication.instance()
-        app.setWindowIcon(QIcon(resource_path("icon.ico")))
+        app.setWindowIcon(self.app_icon)
 
         # Initialize UI components
         self.tabs = QTabWidget()
@@ -232,11 +264,10 @@ class MainWindow(QMainWindow):
         self.init_status()
         self.set_theme(load_theme())
 
-        # Initialize with file or new tab
+        # Show an empty editor first so the window can render quickly even on low-RAM devices.
+        self.add_new_tab()
         if initial_file:
-            self.open_file(initial_file)
-        else:
-            self.add_new_tab()
+            QTimer.singleShot(0, lambda: self.open_file(initial_file))
 
         self.reset_idle_timer()
 
