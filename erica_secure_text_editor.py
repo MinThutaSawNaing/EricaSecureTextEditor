@@ -1,12 +1,13 @@
 # Erica Secure Text Editor v3.1 – With Font Size Controls (Tested & Working)
-import sys, os, json, secrets, re, hmac
+import sys, os, json, secrets, re, hmac, ctypes
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QInputDialog,
     QMessageBox, QLineEdit, QStatusBar, QLabel, QDialog,
     QVBoxLayout, QProgressBar, QPushButton, QTabWidget, QTextBrowser
 )
 from PyQt6.QtGui import QFont, QIcon, QAction, QTextCharFormat, QTextCursor, QTextListFormat, QTextBlockFormat, QBrush, QColor, QDesktopServices
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QTextDocumentFragment, QTextTableFormat, QTextFrameFormat
+from PyQt6.QtCore import Qt, QTimer, QUrl, QMimeData
 
 # Constants
 def ensure_windows_supported():
@@ -27,6 +28,7 @@ DEFAULT_TIMEOUT = 60 * 60  # 1 hour
 CLIPBOARD_CLEAR_TIME = 300 * 1000  # 5 minutes in milliseconds
 DEFAULT_FONT_SIZE = 12
 IMAGE_MAGIC = b"ERICAIMG1"
+WINDOWS_APP_ID = "MinThutaSawNaing.EricaSecureTextEditor.3.1"
 _CRYPTO_CACHE = None
 
 def resource_path(relative_path):
@@ -37,6 +39,15 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+
+def set_windows_app_id():
+    if not sys.platform.startswith('win'):
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
+    except Exception:
+        pass
 
 
 def get_crypto():
@@ -427,6 +438,33 @@ class MainWindow(QMainWindow):
     def openExternalLink(self, url):
         """Open clicked links in default browser"""
         QDesktopServices.openUrl(QUrl(url))
+
+    def insert_table(self):
+        editor = self.current_editor
+        if not editor or editor.isReadOnly():
+            return
+
+        rows, ok = QInputDialog.getInt(self, "Insert Table", "Rows:", 2, 1, 20)
+        if not ok:
+            return
+
+        columns, ok = QInputDialog.getInt(self, "Insert Table", "Columns:", 2, 1, 10)
+        if not ok:
+            return
+
+        try:
+            cursor = editor.textCursor()
+            table_format = QTextTableFormat()
+            table_format.setBorder(1)
+            table_format.setBorderStyle(QTextFrameFormat.BorderStyle.BorderStyle_Solid)
+            table_format.setCellPadding(6)
+            table_format.setCellSpacing(0)
+            table_format.setHeaderRowCount(1 if rows > 1 else 0)
+            cursor.insertTable(rows, columns, table_format)
+            editor.setFocus()
+            editor.document().setModified(True)
+        except Exception as e:
+            QMessageBox.critical(self, "Formatting Error", f"Failed to insert table: {e}")
 
 # Proper insert_link implementation
     def insert_link(self):
@@ -914,10 +952,15 @@ class MainWindow(QMainWindow):
     def secure_copy(self):
         if not self.current_editor:
             return
-            
-        text = self.current_editor.textCursor().selectedText()
-        if text:
-            QApplication.clipboard().setText(text)
+
+        
+        cursor = self.current_editor.textCursor()
+        if cursor.hasSelection():
+            selection = QTextDocumentFragment(cursor)
+            mime_data = QMimeData()
+            mime_data.setHtml(selection.toHtml())
+            mime_data.setText(cursor.selectedText())
+            QApplication.clipboard().setMimeData(mime_data)
             self.clipboard_clear_timer.start(CLIPBOARD_CLEAR_TIME)
             QMessageBox.information(
                 self,
@@ -1336,6 +1379,10 @@ class MainWindow(QMainWindow):
         numbered_list_action.triggered.connect(self.apply_numbered_list)
         format_menu.addAction(numbered_list_action)
 
+        table_action = QAction("Insert Table", self)
+        table_action.triggered.connect(self.insert_table)
+        format_menu.addAction(table_action)
+
         # Links
         format_menu.addSeparator()
 
@@ -1435,6 +1482,7 @@ class MainWindow(QMainWindow):
 
 if __name__ == '__main__':
     ensure_windows_supported()
+    set_windows_app_id()
     app = QApplication(sys.argv)
     app.setApplicationName("Erica Secure Text Editor")
 
