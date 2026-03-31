@@ -466,6 +466,67 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Formatting Error", f"Failed to insert table: {e}")
 
+    def get_current_table(self):
+        editor = self.current_editor
+        if not editor or editor.isReadOnly():
+            return None, None
+
+        cursor = editor.textCursor()
+        table = cursor.currentTable()
+        if table is None:
+            QMessageBox.information(self, "Table", "Place the cursor inside a table first.")
+            return None, None
+
+        return table, table.cellAt(cursor)
+
+    def insert_table_row_above(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+        table.insertRows(cell.row(), 1)
+        self.current_editor.document().setModified(True)
+
+    def insert_table_row_below(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+        table.insertRows(cell.row() + 1, 1)
+        self.current_editor.document().setModified(True)
+
+    def delete_table_row(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+        if table.rows() <= 1:
+            QMessageBox.information(self, "Table", "A table must keep at least one row.")
+            return
+        table.removeRows(cell.row(), 1)
+        self.current_editor.document().setModified(True)
+
+    def insert_table_column_left(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+        table.insertColumns(cell.column(), 1)
+        self.current_editor.document().setModified(True)
+
+    def insert_table_column_right(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+        table.insertColumns(cell.column() + 1, 1)
+        self.current_editor.document().setModified(True)
+
+    def delete_table_column(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+        if table.columns() <= 1:
+            QMessageBox.information(self, "Table", "A table must keep at least one column.")
+            return
+        table.removeColumns(cell.column(), 1)
+        self.current_editor.document().setModified(True)
+
 # Proper insert_link implementation
     def insert_link(self):
         editor = self.current_editor
@@ -1379,9 +1440,39 @@ class MainWindow(QMainWindow):
         numbered_list_action.triggered.connect(self.apply_numbered_list)
         format_menu.addAction(numbered_list_action)
 
+        table_menu = format_menu.addMenu("Tables")
+
         table_action = QAction("Insert Table", self)
         table_action.triggered.connect(self.insert_table)
-        format_menu.addAction(table_action)
+        table_menu.addAction(table_action)
+
+        table_menu.addSeparator()
+
+        insert_row_above_action = QAction("Insert Row Above", self)
+        insert_row_above_action.triggered.connect(self.insert_table_row_above)
+        table_menu.addAction(insert_row_above_action)
+
+        insert_row_below_action = QAction("Insert Row Below", self)
+        insert_row_below_action.triggered.connect(self.insert_table_row_below)
+        table_menu.addAction(insert_row_below_action)
+
+        delete_row_action = QAction("Delete Current Row", self)
+        delete_row_action.triggered.connect(self.delete_table_row)
+        table_menu.addAction(delete_row_action)
+
+        table_menu.addSeparator()
+
+        insert_column_left_action = QAction("Insert Column Left", self)
+        insert_column_left_action.triggered.connect(self.insert_table_column_left)
+        table_menu.addAction(insert_column_left_action)
+
+        insert_column_right_action = QAction("Insert Column Right", self)
+        insert_column_right_action.triggered.connect(self.insert_table_column_right)
+        table_menu.addAction(insert_column_right_action)
+
+        delete_column_action = QAction("Delete Current Column", self)
+        delete_column_action.triggered.connect(self.delete_table_column)
+        table_menu.addAction(delete_column_action)
 
         # Links
         format_menu.addSeparator()
