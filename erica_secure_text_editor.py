@@ -2,7 +2,7 @@
 import sys, os, json, secrets, re, hmac, ctypes
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QInputDialog,
-    QMessageBox, QLineEdit, QStatusBar, QLabel, QDialog,
+    QMessageBox, QLineEdit, QStatusBar, QLabel, QDialog, QColorDialog,
     QVBoxLayout, QProgressBar, QPushButton, QTabWidget, QTextBrowser
 )
 from PyQt6.QtGui import QFont, QIcon, QAction, QTextCharFormat, QTextCursor, QTextListFormat, QTextBlockFormat, QBrush, QColor, QDesktopServices
@@ -24,11 +24,14 @@ def get_config_path():
 
 CONFIG_PATH = get_config_path()
 CONFIG_FILE = os.path.join(CONFIG_PATH, 'config.json')
+RECOVERY_FILE = os.path.join(CONFIG_PATH, 'recovery.enc')
 DEFAULT_TIMEOUT = 60 * 60  # 1 hour
 CLIPBOARD_CLEAR_TIME = 300 * 1000  # 5 minutes in milliseconds
 DEFAULT_FONT_SIZE = 12
 IMAGE_MAGIC = b"ERICAIMG1"
 WINDOWS_APP_ID = "MinThutaSawNaing.EricaSecureTextEditor.3.1"
+RECENT_FILES_LIMIT = 10
+RECOVERY_AUTOSAVE_INTERVAL_MS = 60 * 1000
 _CRYPTO_CACHE = None
 
 def resource_path(relative_path):
@@ -174,6 +177,39 @@ def save_theme(mode):
     config["theme"] = mode
     save_config(config)
 
+def get_recent_files():
+    return [path for path in load_config().get("recent_files", []) if os.path.exists(path)]
+
+def save_recent_file(path):
+    if not path:
+        return
+    config = load_config()
+    recent_files = [item for item in config.get("recent_files", []) if item != path and os.path.exists(item)]
+    recent_files.insert(0, path)
+    config["recent_files"] = recent_files[:RECENT_FILES_LIMIT]
+    save_config(config)
+
+def get_last_session_files():
+    return [path for path in load_config().get("last_session_files", []) if os.path.exists(path)]
+
+def save_last_session_files(paths):
+    config = load_config()
+    unique_paths = []
+    for path in paths:
+        if path and path not in unique_paths and os.path.exists(path):
+            unique_paths.append(path)
+    config["last_session_files"] = unique_paths
+    save_config(config)
+
+def get_recovery_key():
+    config = load_config()
+    recovery_key = config.get("recovery_key")
+    if not recovery_key:
+        recovery_key = secrets.token_hex(32)
+        config["recovery_key"] = recovery_key
+        save_config(config)
+    return recovery_key
+
 def check_password_strength(password):
     length = len(password) >= 8
     lower = re.search(r"[a-z]", password)
@@ -187,16 +223,26 @@ class IntegrityError(Exception):
     pass
 
 class PasswordDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, require_confirmation=False):
         super().__init__(parent)
+        self.require_confirmation = require_confirmation
         self.setWindowTitle("Set Encryption Password")
-        self.setFixedWidth(230)
+        self.setFixedWidth(260)
         layout = QVBoxLayout(self)
         
         self.input = QLineEdit(self)
         self.input.setEchoMode(QLineEdit.EchoMode.Password)
         self.input.setPlaceholderText("Enter your password...")
         layout.addWidget(self.input)
+
+        if self.require_confirmation:
+            self.confirm_input = QLineEdit(self)
+            self.confirm_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.confirm_input.setPlaceholderText("Confirm your password...")
+            layout.addWidget(self.confirm_input)
+            self.confirm_input.textChanged.connect(self.evaluate)
+        else:
+            self.confirm_input = None
         
         self.strength_bar = QProgressBar(self)
         self.strength_bar.setRange(0, 100)
@@ -221,12 +267,21 @@ class PasswordDialog(QDialog):
         layout.addWidget(self.ok)
         
         self.input.textChanged.connect(self.evaluate)
-        self.ok.clicked.connect(self.accept)
+        self.ok.clicked.connect(self.handle_accept)
 
     def evaluate(self):
         score = check_password_strength(self.input.text())
         self.strength_bar.setValue(score)
-        self.strength_bar.setFormat(f"{score}% Strength")
+        if self.require_confirmation and self.confirm_input and self.input.text() != self.confirm_input.text():
+            self.strength_bar.setFormat("Passwords do not match")
+        else:
+            self.strength_bar.setFormat(f"{score}% Strength")
+
+    def handle_accept(self):
+        if self.require_confirmation and self.confirm_input and self.input.text() != self.confirm_input.text():
+            QMessageBox.warning(self, "Password Mismatch", "The passwords do not match.")
+            return
+        self.accept()
 
     def get_password(self):
         return self.input.text() if self.exec() else None
@@ -287,6 +342,8 @@ class MainWindow(QMainWindow):
         self.timeout_seconds = DEFAULT_TIMEOUT
         self.remaining_time = self.timeout_seconds
         self.timeout_shutdown_in_progress = False
+        self.is_restoring_recovery = False
+        self.recent_files_menu = None
 
         # Setup timers
         self.timeout_timer = QTimer()
@@ -294,6 +351,8 @@ class MainWindow(QMainWindow):
         self.clipboard_clear_timer = QTimer()
         self.clipboard_clear_timer.setSingleShot(True)
         self.clipboard_clear_timer.timeout.connect(self.clear_clipboard)
+        self.recovery_timer = QTimer()
+        self.recovery_timer.timeout.connect(self.autosave_recovery_snapshot)
 
         self.init_menu()
         self.init_status()
@@ -301,9 +360,12 @@ class MainWindow(QMainWindow):
 
         # Show an empty editor first so the window can render quickly even on low-RAM devices.
         self.add_new_tab()
+        self.refresh_recent_files_menu()
+        self.try_restore_recovery_snapshot()
         if initial_file:
             QTimer.singleShot(0, lambda: self.open_file(initial_file))
 
+        self.recovery_timer.start(RECOVERY_AUTOSAVE_INTERVAL_MS)
         self.reset_idle_timer()
 
     # Properties
@@ -620,6 +682,69 @@ class MainWindow(QMainWindow):
         cell.setFormat(cell_format)
         self.current_editor.document().setModified(True)
 
+    def merge_selected_table_cells(self):
+        table, _ = self.get_current_table()
+        if table is None:
+            return
+        cursor = self.current_editor.textCursor()
+        if not cursor.hasSelection():
+            QMessageBox.information(self, "Table", "Select adjacent table cells to merge.")
+            return
+        try:
+            table.mergeCells(cursor)
+            self.current_editor.document().setModified(True)
+        except Exception as e:
+            QMessageBox.critical(self, "Table", f"Could not merge cells: {e}")
+
+    def split_current_table_cell(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+        if cell.rowSpan() == 1 and cell.columnSpan() == 1:
+            QMessageBox.information(self, "Table", "The current cell is not merged.")
+            return
+        table.splitCell(cell.row(), cell.column(), 1, 1)
+        self.current_editor.document().setModified(True)
+
+    def set_current_cell_alignment(self, alignment):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+        for row in range(cell.row(), cell.row() + cell.rowSpan()):
+            for column in range(cell.column(), cell.column() + cell.columnSpan()):
+                current_cell = table.cellAt(row, column)
+                cursor = current_cell.firstCursorPosition()
+                block_format = cursor.blockFormat()
+                block_format.setAlignment(alignment)
+                cursor.setBlockFormat(block_format)
+        self.current_editor.document().setModified(True)
+
+    def set_current_cell_background(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+        color = QColorDialog.getColor(parent=self, title="Select Cell Background")
+        if not color.isValid():
+            return
+        cell_format = cell.format().toTableCellFormat()
+        cell_format.setBackground(color)
+        cell.setFormat(cell_format)
+        self.current_editor.document().setModified(True)
+
+    def set_current_row_background(self):
+        table, cell = self.get_current_table()
+        if table is None:
+            return
+        color = QColorDialog.getColor(parent=self, title="Select Row Background")
+        if not color.isValid():
+            return
+        for column in range(table.columns()):
+            row_cell = table.cellAt(cell.row(), column)
+            cell_format = row_cell.format().toTableCellFormat()
+            cell_format.setBackground(color)
+            row_cell.setFormat(cell_format)
+        self.current_editor.document().setModified(True)
+
 # Proper insert_link implementation
     def insert_link(self):
         editor = self.current_editor
@@ -779,6 +904,7 @@ class MainWindow(QMainWindow):
 
         # 7. Update the status bar to inform the user about the new tab.
         self.status.showMessage(f"Active: {tab_title}")
+        self.update_session_metadata()
 
     def close_tab(self, index):
         if index < 0 or index >= len(self.open_documents):
@@ -812,10 +938,11 @@ class MainWindow(QMainWindow):
         # Create new tab if none left
         if not self.tabs.count():
             self.add_new_tab()
+        self.update_session_metadata()
 
     def prompt_password(self, title, show_strength=False):
         if show_strength:
-            dialog = PasswordDialog(self)
+            dialog = PasswordDialog(self, require_confirmation=True)
             dialog.setWindowTitle(title)
             return dialog.get_password()
         else:
@@ -823,6 +950,129 @@ class MainWindow(QMainWindow):
                 self, title, "Enter password:", QLineEdit.EchoMode.Password
             )
             return password if ok else None
+
+    def get_session_file_paths(self):
+        return [doc['path'] for doc in self.open_documents if doc.get('path')]
+
+    def update_session_metadata(self):
+        save_last_session_files(self.get_session_file_paths())
+
+    def refresh_recent_files_menu(self):
+        if self.recent_files_menu is None:
+            return
+        self.recent_files_menu.clear()
+        recent_files = get_recent_files()
+        if not recent_files:
+            empty_action = QAction("No Recent Files", self)
+            empty_action.setEnabled(False)
+            self.recent_files_menu.addAction(empty_action)
+            return
+
+        for path in recent_files:
+            action = QAction(os.path.basename(path), self)
+            action.setToolTip(path)
+            action.triggered.connect(lambda _, p=path: self.open_file(p))
+            self.recent_files_menu.addAction(action)
+
+    def try_restore_last_session(self):
+        session_files = get_last_session_files()
+        if not session_files:
+            QMessageBox.information(self, "Last Session", "No previous session files were found.")
+            return
+
+        opened_any = False
+        for path in session_files:
+            if os.path.exists(path):
+                self.open_file(path)
+                opened_any = True
+        if opened_any:
+            self.status.showMessage("Last session reopened.")
+
+    def build_recovery_payload(self):
+        documents = []
+        for doc in self.open_documents:
+            editor = doc['editor']
+            if not editor.toPlainText().strip() and not doc.get('path'):
+                continue
+            if not editor.document().isModified() and doc.get('path'):
+                continue
+            documents.append({
+                "path": doc.get('path'),
+                "html": editor.toHtml(),
+            })
+        return {"documents": documents}
+
+    def autosave_recovery_snapshot(self):
+        if self.is_restoring_recovery or not self.open_documents:
+            return
+
+        payload = self.build_recovery_payload()
+        if not payload["documents"]:
+            return
+
+        try:
+            encrypted = encrypt_bytes(
+                json.dumps(payload).encode("utf-8"),
+                get_recovery_key()
+            )
+            os.makedirs(CONFIG_PATH, exist_ok=True)
+            with open(RECOVERY_FILE, 'wb') as recovery_file:
+                recovery_file.write(encrypted)
+        except Exception:
+            pass
+
+    def clear_recovery_snapshot(self):
+        if os.path.exists(RECOVERY_FILE):
+            try:
+                os.remove(RECOVERY_FILE)
+            except OSError:
+                pass
+
+    def try_restore_recovery_snapshot(self):
+        if not os.path.exists(RECOVERY_FILE):
+            return
+
+        try:
+            with open(RECOVERY_FILE, 'rb') as recovery_file:
+                encrypted = recovery_file.read()
+            payload = json.loads(
+                decrypt_bytes(encrypted, get_recovery_key()).decode("utf-8")
+            )
+        except Exception:
+            return
+
+        if not payload.get("documents"):
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Recovery Available",
+            "An encrypted recovery snapshot was found. Restore your unsaved work?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            self.clear_recovery_snapshot()
+            return
+
+        self.is_restoring_recovery = True
+        while self.tabs.count():
+            self.tabs.removeTab(0)
+        self.open_documents.clear()
+
+        for doc in payload["documents"]:
+            self.add_new_tab(file_path=doc.get("path"), content=doc.get("html", ""), content_is_html=True)
+        self.clear_recovery_snapshot()
+        self.is_restoring_recovery = False
+        self.status.showMessage("Recovered unsaved workspace.")
+
+    def closeEvent(self, event):
+        if self.build_recovery_payload()["documents"]:
+            self.autosave_recovery_snapshot()
+        else:
+            self.clear_recovery_snapshot()
+        self.update_session_metadata()
+        event.accept()
 
     def silent_save(self, index):
         editor = self.open_documents[index]['editor']
@@ -855,6 +1105,9 @@ class MainWindow(QMainWindow):
             editor.document().setModified(False)
             self.open_documents[index]['password'] = password
             self.tabs.setTabText(index, os.path.basename(file_path))
+            save_recent_file(file_path)
+            self.refresh_recent_files_menu()
+            self.update_session_metadata()
             return True
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Save failed: {e}")
@@ -998,6 +1251,9 @@ class MainWindow(QMainWindow):
                 self.add_new_tab(file_path=path, content=text, content_is_html=True)
                 self.open_documents[self.tabs.currentIndex()]['password'] = password
                 self.status.showMessage(f"Opened: {os.path.basename(path)}")
+            save_recent_file(path)
+            self.refresh_recent_files_menu()
+            self.update_session_metadata()
                 
         except IntegrityError:
             QMessageBox.critical(self, "Integrity Error", 
@@ -1036,6 +1292,9 @@ class MainWindow(QMainWindow):
                 os.chmod(self.current_file_path, 0o444)
                 self.set_current_password(password)
                 self.current_editor.document().setModified(False)
+                save_recent_file(self.current_file_path)
+                self.refresh_recent_files_menu()
+                self.update_session_metadata()
                 msg = f"Saved: {os.path.basename(self.current_file_path)}"
                 self.status.showMessage(msg)
                 
@@ -1082,6 +1341,9 @@ class MainWindow(QMainWindow):
             self.set_current_file_path(path)
             self.set_current_password(password)
             self.current_editor.document().setModified(False)
+            save_recent_file(path)
+            self.refresh_recent_files_menu()
+            self.update_session_metadata()
             msg = f"Saved As: {os.path.basename(path)}"
             self.status.showMessage(msg)
             
@@ -1411,6 +1673,12 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self.open_file)
         file_menu.addAction(open_action)
 
+        reopen_session_action = QAction("Reopen Last Session", self)
+        reopen_session_action.triggered.connect(self.try_restore_last_session)
+        file_menu.addAction(reopen_session_action)
+
+        self.recent_files_menu = file_menu.addMenu("Recent Files")
+
         save_action = QAction("Save Encrypted", self)
         save_action.setShortcut("Ctrl+S")
         save_action.triggered.connect(self.save_file)
@@ -1579,6 +1847,30 @@ class MainWindow(QMainWindow):
 
         table_menu.addSeparator()
 
+        merge_cells_action = QAction("Merge Selected Cells", self)
+        merge_cells_action.triggered.connect(self.merge_selected_table_cells)
+        table_menu.addAction(merge_cells_action)
+
+        split_cell_action = QAction("Split Current Cell", self)
+        split_cell_action.triggered.connect(self.split_current_table_cell)
+        table_menu.addAction(split_cell_action)
+
+        alignment_menu = table_menu.addMenu("Align Current Cell")
+
+        align_left_action = QAction("Align Left", self)
+        align_left_action.triggered.connect(lambda: self.set_current_cell_alignment(Qt.AlignmentFlag.AlignLeft))
+        alignment_menu.addAction(align_left_action)
+
+        align_center_action = QAction("Align Center", self)
+        align_center_action.triggered.connect(lambda: self.set_current_cell_alignment(Qt.AlignmentFlag.AlignCenter))
+        alignment_menu.addAction(align_center_action)
+
+        align_right_action = QAction("Align Right", self)
+        align_right_action.triggered.connect(lambda: self.set_current_cell_alignment(Qt.AlignmentFlag.AlignRight))
+        alignment_menu.addAction(align_right_action)
+
+        table_menu.addSeparator()
+
         resize_column_action = QAction("Resize Current Column", self)
         resize_column_action.triggered.connect(self.resize_current_column)
         table_menu.addAction(resize_column_action)
@@ -1590,6 +1882,16 @@ class MainWindow(QMainWindow):
         resize_cell_action = QAction("Resize Current Cell", self)
         resize_cell_action.triggered.connect(self.resize_current_cell_padding)
         table_menu.addAction(resize_cell_action)
+
+        table_menu.addSeparator()
+
+        cell_background_action = QAction("Set Current Cell Background", self)
+        cell_background_action.triggered.connect(self.set_current_cell_background)
+        table_menu.addAction(cell_background_action)
+
+        row_background_action = QAction("Set Current Row Background", self)
+        row_background_action.triggered.connect(self.set_current_row_background)
+        table_menu.addAction(row_background_action)
 
         # Links
         format_menu.addSeparator()
