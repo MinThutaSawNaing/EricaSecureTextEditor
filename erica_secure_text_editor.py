@@ -26,6 +26,7 @@ CONFIG_FILE = os.path.join(CONFIG_PATH, 'config.json')
 DEFAULT_TIMEOUT = 60 * 60  # 1 hour
 CLIPBOARD_CLEAR_TIME = 300 * 1000  # 5 minutes in milliseconds
 DEFAULT_FONT_SIZE = 12
+IMAGE_MAGIC = b"ERICAIMG1"
 _CRYPTO_CACHE = None
 
 def resource_path(relative_path):
@@ -78,12 +79,18 @@ def compute_hmac(key: bytes, data: bytes) -> bytes:
     return signer.finalize()
 
 def encrypt_text(plain: str, password: str) -> bytes:
+    return encrypt_bytes(plain.encode(), password)
+
+def decrypt_text(data: bytes, password: str) -> str:
+    return decrypt_bytes(data, password).decode()
+
+def encrypt_bytes(raw: bytes, password: str) -> bytes:
     crypto = get_crypto()
     salt = secrets.token_bytes(16)
     iv = secrets.token_bytes(16)
     key = derive_key(password, salt)
     padder = crypto["padding"].PKCS7(128).padder()
-    padded = padder.update(plain.encode()) + padder.finalize()
+    padded = padder.update(raw) + padder.finalize()
     cipher = crypto["Cipher"](
         crypto["algorithms"].AES(key),
         crypto["modes"].CBC(iv),
@@ -95,7 +102,7 @@ def encrypt_text(plain: str, password: str) -> bytes:
     tag = compute_hmac(key, full_data)
     return full_data + tag
 
-def decrypt_text(data: bytes, password: str) -> str:
+def decrypt_bytes(data: bytes, password: str) -> bytes:
     crypto = get_crypto()
     if len(data) < 48:
         raise ValueError("Data too short to be valid.")
@@ -114,7 +121,24 @@ def decrypt_text(data: bytes, password: str) -> str:
     decryptor = cipher.decryptor()
     padded = decryptor.update(encrypted) + decryptor.finalize()
     unpadder = crypto["padding"].PKCS7(128).unpadder()
-    return (unpadder.update(padded) + unpadder.finalize()).decode()
+    return unpadder.update(padded) + unpadder.finalize()
+
+def pack_image_payload(image_bytes: bytes, extension: str) -> bytes:
+    ext_bytes = extension.encode("utf-8")
+    if len(ext_bytes) > 255:
+        raise ValueError("Image extension is too long.")
+    return IMAGE_MAGIC + bytes([len(ext_bytes)]) + ext_bytes + image_bytes
+
+def unpack_image_payload(payload: bytes):
+    if not payload.startswith(IMAGE_MAGIC) or len(payload) <= len(IMAGE_MAGIC):
+        raise ValueError("Invalid encrypted image format.")
+    ext_len_index = len(IMAGE_MAGIC)
+    ext_len = payload[ext_len_index]
+    data_start = ext_len_index + 1 + ext_len
+    if data_start > len(payload):
+        raise ValueError("Corrupted encrypted image payload.")
+    extension = payload[ext_len_index + 1:data_start].decode("utf-8")
+    return extension, payload[data_start:]
 
 # Config Management
 def load_config():
@@ -656,6 +680,87 @@ class MainWindow(QMainWindow):
         if os.path.exists(path):
             os.chmod(path, 0o666)
 
+    def encrypt_image_file(self):
+        image_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Image to Encrypt",
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff)"
+        )
+        if not image_path:
+            return
+
+        default_name = os.path.splitext(os.path.basename(image_path))[0] + ".eimg"
+        encrypted_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Encrypted Image",
+            default_name,
+            "Erica Encrypted Image (*.eimg)"
+        )
+        if not encrypted_path:
+            return
+
+        password = self.prompt_password("Encrypt Image", show_strength=True)
+        if not password:
+            return
+
+        try:
+            with open(image_path, 'rb') as image_file:
+                image_bytes = image_file.read()
+
+            payload = pack_image_payload(image_bytes, os.path.splitext(image_path)[1])
+            encrypted = encrypt_bytes(payload, password)
+            self._ensure_file_writable(encrypted_path)
+            with open(encrypted_path, 'wb') as encrypted_file:
+                encrypted_file.write(encrypted)
+
+            os.chmod(encrypted_path, 0o444)
+            self.status.showMessage(f"Encrypted image: {os.path.basename(encrypted_path)}")
+            QMessageBox.information(self, "Image Encrypted", "Image encrypted successfully.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Image encryption failed: {e}")
+
+    def decrypt_image_file(self):
+        encrypted_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Encrypted Image",
+            "",
+            "Erica Encrypted Image (*.eimg)"
+        )
+        if not encrypted_path:
+            return
+
+        password = self.prompt_password("Decrypt Image")
+        if not password:
+            return
+
+        try:
+            with open(encrypted_path, 'rb') as encrypted_file:
+                encrypted_data = encrypted_file.read()
+
+            payload = decrypt_bytes(encrypted_data, password)
+            original_extension, image_bytes = unpack_image_payload(payload)
+            default_name = os.path.splitext(os.path.basename(encrypted_path))[0] + original_extension
+            output_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Decrypted Image",
+                default_name,
+                f"Image Files (*{original_extension});;All Files (*)"
+            )
+            if not output_path:
+                return
+
+            self._ensure_file_writable(output_path)
+            with open(output_path, 'wb') as output_file:
+                output_file.write(image_bytes)
+
+            self.status.showMessage(f"Decrypted image: {os.path.basename(output_path)}")
+            QMessageBox.information(self, "Image Decrypted", "Image decrypted successfully.")
+        except IntegrityError:
+            QMessageBox.critical(self, "Integrity Error", "Encrypted image is tampered with or corrupted.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Image decryption failed: {e}")
+
     # File Operations
     def open_file(self, path=None):
         if not path:
@@ -1057,6 +1162,16 @@ class MainWindow(QMainWindow):
         save_as_action.setShortcut("Ctrl+Shift+S")
         save_as_action.triggered.connect(self.save_as_file)
         file_menu.addAction(save_as_action)
+
+        file_menu.addSeparator()
+
+        encrypt_image_action = QAction("Encrypt Image", self)
+        encrypt_image_action.triggered.connect(self.encrypt_image_file)
+        file_menu.addAction(encrypt_image_action)
+
+        decrypt_image_action = QAction("Decrypt Image", self)
+        decrypt_image_action.triggered.connect(self.decrypt_image_file)
+        file_menu.addAction(decrypt_image_action)
 
         file_menu.addSeparator()
 
