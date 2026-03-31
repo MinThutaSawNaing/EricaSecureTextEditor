@@ -216,9 +216,10 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self.on_tab_changed)
         self.setCentralWidget(self.tabs)
 
-        self.open_documents = []  # {'editor': QTextEdit, 'path': str or None}
+        self.open_documents = []  # {'editor': QTextEdit, 'path': str or None, 'password': str or None}
         self.timeout_seconds = DEFAULT_TIMEOUT
         self.remaining_time = self.timeout_seconds
+        self.timeout_shutdown_in_progress = False
 
         # Setup timers
         self.timeout_timer = QTimer()
@@ -259,6 +260,17 @@ class MainWindow(QMainWindow):
         if current_index != -1 and self.open_documents and current_index < len(self.open_documents):
             self.open_documents[current_index]['path'] = path
             self.tabs.setTabText(current_index, os.path.basename(path) if path else "Untitled")
+
+    def set_current_password(self, password):
+        current_index = self.tabs.currentIndex()
+        if current_index != -1 and self.open_documents and current_index < len(self.open_documents):
+            self.open_documents[current_index]['password'] = password
+
+    def get_current_password(self):
+        current_index = self.tabs.currentIndex()
+        if current_index == -1 or not self.open_documents or current_index >= len(self.open_documents):
+            return None
+        return self.open_documents[current_index].get('password')
 
     # Text Formatting Methods
     def apply_bold(self):
@@ -495,7 +507,7 @@ class MainWindow(QMainWindow):
         
         # 2. Add the editor and its associated file path to our internal list
         #    of open documents. This list helps manage multiple tabs.
-        self.open_documents.append({'editor': editor, 'path': file_path})
+        self.open_documents.append({'editor': editor, 'path': file_path, 'password': None})
         
         # 3. Determine the title for the new tab. If a file_path is provided,
         #    use its base name; otherwise, default to "Untitled".
@@ -580,7 +592,9 @@ class MainWindow(QMainWindow):
                 return False
             self.open_documents[index]['path'] = file_path
             
-        password = self.prompt_password("Encrypt File", show_strength=True)
+        password = self.open_documents[index].get('password')
+        if not password:
+            password = self.prompt_password("Encrypt File", show_strength=True)
         if not password:
             return False
             
@@ -592,6 +606,7 @@ class MainWindow(QMainWindow):
                 
             os.chmod(file_path, 0o444)  # Read-only
             editor.document().setModified(False)
+            self.open_documents[index]['password'] = password
             self.tabs.setTabText(index, os.path.basename(file_path))
             return True
         except Exception as e:
@@ -648,9 +663,12 @@ class MainWindow(QMainWindow):
                     and not self.current_editor.toPlainText()):
                 self.current_editor.setHtml(text)
                 self.set_current_file_path(path)
+                self.set_current_password(password)
+                self.current_editor.document().setModified(False)
                 self.status.showMessage(f"Opened: {os.path.basename(path)}")
             else:
                 self.add_new_tab(file_path=path, content=text, content_is_html=True)
+                self.open_documents[self.tabs.currentIndex()]['password'] = password
                 self.status.showMessage(f"Opened: {os.path.basename(path)}")
                 
         except IntegrityError:
@@ -666,16 +684,18 @@ class MainWindow(QMainWindow):
 
         if self.current_file_path:
             try:
-                # Read existing file to determine if it's encrypted
-                with open(self.current_file_path, 'rb') as f:
-                    data = f.read()
-                
-                # If data exists and is long enough to be encrypted, prompt for existing password
-                # Otherwise, it's a new file or an unencrypted file being saved for the first time
-                if len(data) >= 48: # Minimum size for salt (16) + IV (16) + HMAC (32)
-                    password = self.prompt_password("Enter Password")
-                else:
-                    password = self.prompt_password("Set Password", show_strength=True)
+                password = self.get_current_password()
+                if not password:
+                    # Read existing file to determine if it's encrypted
+                    with open(self.current_file_path, 'rb') as f:
+                        data = f.read()
+
+                    # If data exists and is long enough to be encrypted, prompt for existing password
+                    # Otherwise, it's a new file or an unencrypted file being saved for the first time
+                    if len(data) >= 48: # Minimum size for salt (16) + IV (16) + HMAC (32)
+                        password = self.prompt_password("Enter Password")
+                    else:
+                        password = self.prompt_password("Set Password", show_strength=True)
                     
                 if not password:
                     return
@@ -686,6 +706,7 @@ class MainWindow(QMainWindow):
                     f.write(encrypted)
                     
                 os.chmod(self.current_file_path, 0o444)
+                self.set_current_password(password)
                 self.current_editor.document().setModified(False)
                 msg = f"Saved: {os.path.basename(self.current_file_path)}"
                 self.status.showMessage(msg)
@@ -731,6 +752,7 @@ class MainWindow(QMainWindow):
                 
             os.chmod(path, 0o444)
             self.set_current_file_path(path)
+            self.set_current_password(password)
             self.current_editor.document().setModified(False)
             msg = f"Saved As: {os.path.basename(path)}"
             self.status.showMessage(msg)
@@ -778,6 +800,7 @@ class MainWindow(QMainWindow):
         self.current_editor.setPlainText("0" * len(self.current_editor.toPlainText()))
         QTimer.singleShot(100, self.current_editor.clear)
         self.set_current_file_path(None)
+        self.set_current_password(None)
         self.current_editor.document().setModified(False)
         self.tabs.setCurrentIndex(self.tabs.currentIndex())  # Refresh tab
         QMessageBox.information(self, "Secure Clear", "Editor cleared.")
@@ -812,23 +835,25 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Timer", msg)
 
     def reset_idle_timer(self):
+        if self.timeout_shutdown_in_progress:
+            return
         self.remaining_time = self.timeout_seconds
         self.timeout_timer.start(1000)
 
     def handle_timeout_tick(self):
+        if self.timeout_shutdown_in_progress:
+            return
+
         self.remaining_time -= 1
         mins = self.remaining_time // 60
         secs = self.remaining_time % 60
         self.time_label.setText(f"⏱ Lock in: {mins}:{secs:02d}")
         
         if self.remaining_time <= 0:
+            self.timeout_shutdown_in_progress = True
             self.timeout_timer.stop()
-            # Clear all tabs
-            for i in range(self.tabs.count()):
-                self.open_documents[i]['editor'].clear()
-                self.open_documents[i]['path'] = None
-                self.tabs.setTabText(i, "Untitled")
-            QMessageBox.warning(self, "Auto Lock", "All tabs cleared due to inactivity.")
+            QMessageBox.warning(self, "Auto Lock", "Timer exceeded. Erica will now close.")
+            QApplication.instance().quit()
 
     # View Actions
     def zoom_in(self):
