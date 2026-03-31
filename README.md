@@ -23,9 +23,7 @@ This project now targets **Windows only**.
 
 The primary application entrypoint is:
 
-- `Erica_Secure_Text_Editor_Update30.py`
-
-The `Erica_Secure_Text_Editor_Update30_Linux.py` file is kept in the repo as a legacy snapshot, but the app is no longer supported on Linux or macOS.
+- `erica_secure_text_editor.py`
 
 ## Quick Start
 
@@ -39,7 +37,7 @@ pip install PyQt6 cryptography
 3. Run the app:
 
 ```bash
-python Erica_Secure_Text_Editor_Update30.py
+python erica_secure_text_editor.py
 ```
 
 ## Build EXE
@@ -47,18 +45,18 @@ python Erica_Secure_Text_Editor_Update30.py
 Use the included PyInstaller spec:
 
 ```bash
-pyinstaller Erica_Secure_Text_Editor_Update30.spec
+pyinstaller erica_secure_text_editor.spec
 ```
 
 The generated executable will be placed in `dist/`.
 
 ## Project Files
 
-- `Erica_Secure_Text_Editor_Update30.py`: main Windows app
-- `Erica_Secure_Text_Editor_Update30.spec`: PyInstaller build config
+- `erica_secure_text_editor.py`: main Windows app
+- `erica_secure_text_editor.spec`: PyInstaller build config
 - `icon.ico`: Windows app icon
 - `closebutton.png`: UI asset
-- `final.iss`: installer-related script
+- `erica_secure_text_editor.iss`: installer script
 
 ## Security Notes
 

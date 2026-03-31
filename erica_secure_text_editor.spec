@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['Erica_Secure_Text_Editor_Update30.py'],
+    ['erica_secure_text_editor.py'],
     pathex=[],
     binaries=[],
     datas=[('icon.ico', '.'), ('closebutton.png', '.')],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Erica_Secure_Text_Editor_Update30',
+    name='EricaSecureTextEditor',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
