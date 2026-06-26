@@ -29,7 +29,7 @@ class EricaAppTests(unittest.TestCase):
         self.assertEqual(appmod.decrypt_text(encrypted, "Passw0rd!"), "hello")
 
     def test_recent_files_and_last_session(self):
-        test_file = os.path.join(self.temp_dir.name, "sample.enc")
+        test_file = os.path.join(self.temp_dir.name, "sample.erica")
         with open(test_file, "wb") as handle:
             handle.write(b"data")
 
@@ -51,12 +51,12 @@ class EricaAppTests(unittest.TestCase):
         self.assertIn("recover me", recovered.decode("utf-8"))
 
     def test_save_and_resave_same_file(self):
-        fd, path = tempfile.mkstemp(dir=self.temp_dir.name, suffix=".enc")
+        fd, path = tempfile.mkstemp(dir=self.temp_dir.name, suffix=".erica")
         os.close(fd)
         os.unlink(path)
 
         with patch.object(appmod.QMessageBox, "question", return_value=appmod.QMessageBox.StandardButton.No), \
-             patch.object(appmod.QFileDialog, "getSaveFileName", return_value=(path, "Encrypted Files (*.enc)")):
+             patch.object(appmod.QFileDialog, "getSaveFileName", return_value=(path, "Erica Secure Files (*.erica)")):
             self.window.prompt_password = lambda *args, **kwargs: "Passw0rd!"
             self.window.current_editor.setPlainText("first")
             self.window.save_as_file()
@@ -66,6 +66,18 @@ class EricaAppTests(unittest.TestCase):
         with open(path, "rb") as handle:
             decrypted = appmod.decrypt_text(handle.read(), "Passw0rd!")
         self.assertIn("second", decrypted)
+
+    def test_save_adds_erica_extension_when_missing(self):
+        path = os.path.join(self.temp_dir.name, "notes")
+
+        with patch.object(appmod.QMessageBox, "question", return_value=appmod.QMessageBox.StandardButton.No), \
+             patch.object(appmod.QFileDialog, "getSaveFileName", return_value=(path, "Erica Secure Files (*.erica)")):
+            self.window.prompt_password = lambda *args, **kwargs: "Passw0rd!"
+            self.window.current_editor.setPlainText("extension test")
+            self.window.save_as_file()
+
+        saved_path = f"{path}{appmod.DOCUMENT_EXTENSION}"
+        self.assertTrue(os.path.exists(saved_path))
 
     def test_timeout_single_shutdown(self):
         calls = {"warning": 0, "quit": 0}

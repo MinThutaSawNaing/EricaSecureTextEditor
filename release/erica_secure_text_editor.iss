@@ -1,9 +1,12 @@
 #define MyAppName "Erica Secure Text Editor"
-#define MyAppVersion "3.1"
+#define MyAppVersion "3.2"
 #define MyAppExeName "EricaSecureTextEditor.exe"
 #define MyAppPublisher "Min Thuta Saw Naing (Eric)"
 #define MyAppURL "https://github.com/MinThutaSawNaing/EricaSecureTextEditor"
 #define MySourceDir AddBackslash(SourcePath)
+#define MyAppAssocName "Erica Secure Document"
+#define MyAppAssocExt ".erica"
+#define MyAppAssocKey StringChange(MyAppAssocName, " ", "") + MyAppAssocExt
 
 [Setup]
 AppName={#MyAppName}
@@ -28,9 +31,18 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 LicenseFile={#MySourceDir}LICENSE
+ChangesAssociations=yes
 
 [Files]
 Source: "{#MySourceDir}dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+
+[Registry]
+Root: HKCR; Subkey: "{#MyAppAssocExt}"; ValueType: string; ValueData: "{#MyAppAssocKey}"; Flags: uninsdeletevalue
+Root: HKCR; Subkey: "{#MyAppAssocKey}"; ValueType: string; ValueData: "{#MyAppAssocName}"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "{#MyAppAssocKey}\DefaultIcon"; ValueType: string; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCR; Subkey: "{#MyAppAssocKey}\shell\open\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
+Root: HKCR; Subkey: "Applications\{#MyAppExeName}\SupportedTypes"; ValueType: string; ValueName: "{#MyAppAssocExt}"; ValueData: ""
+Root: HKCR; Subkey: "Applications\{#MyAppExeName}\shell\open\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

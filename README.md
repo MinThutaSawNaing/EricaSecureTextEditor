@@ -4,6 +4,15 @@ Erica Secure Text Editor is a Windows desktop application for writing, encryptin
 
 This project is a strong portfolio example of applied desktop engineering: secure local data handling, UI development, state management, packaging, and automated test coverage in a single Python codebase.
 
+## Download
+
+Download the Windows builds directly from the committed [`release/`](./release/) folder:
+
+- Recommended installer: [`EricaSecureTextEditorSetup_3.2.exe`](./release/EricaSecureTextEditorSetup_3.2.exe)
+- Portable executable: [`EricaSecureTextEditor.exe`](./release/EricaSecureTextEditor.exe)
+
+The installer is the recommended option because it adds Start Menu and desktop shortcuts and registers Erica for Windows `Open with` support for `.erica` secure documents.
+
 ## Project Snapshot
 
 - Built with Python and PyQt6 for a native-style desktop experience
@@ -31,6 +40,7 @@ From a recruiter or hiring-manager perspective, this repository highlights:
 ### Security
 
 - Encrypted document save and open flow
+- New secure documents save with the `.erica` extension while legacy `.enc` files remain supported
 - HMAC-SHA256 integrity checks to detect tampering or corruption
 - Password prompt and password strength feedback during secure save flows
 - Idle timeout with auto-lock style shutdown behavior
@@ -57,6 +67,7 @@ From a recruiter or hiring-manager perspective, this repository highlights:
 
 - PyInstaller spec for generating a Windows executable
 - Inno Setup script for creating a Windows installer
+- Installer registers Erica in Windows `Open with` for `.erica` documents
 - `release/` folder for distributable Windows artifacts
 - Application icon and packaged UI assets included in the repo
 
@@ -119,14 +130,14 @@ Use the included Inno Setup script after the executable has been built:
 iscc erica_secure_text_editor.iss
 ```
 
-The installer is written to `release/` as `EricaSecureTextEditorSetup_3.1.exe`.
+The installer is written to `release/` as `EricaSecureTextEditorSetup_3.2.exe`.
 
 ### Release folder
 
 The `release/` folder is intended to hold the Windows deliverables for sharing or publishing:
 
 - `EricaSecureTextEditor.exe`
-- `EricaSecureTextEditorSetup_3.1.exe`
+- `EricaSecureTextEditorSetup_3.2.exe`
 - `erica_secure_text_editor.iss`
 
 This keeps the checked-in distribution artifacts separate from the transient `dist/` and `build/` directories.

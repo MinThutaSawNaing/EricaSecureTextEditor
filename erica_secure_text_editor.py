@@ -1,4 +1,4 @@
-# Erica Secure Text Editor v3.1 – With Font Size Controls (Tested & Working)
+# Erica Secure Text Editor v3.2 - Windows file association support
 import sys, os, json, secrets, re, hmac, ctypes
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QInputDialog,
@@ -29,7 +29,12 @@ DEFAULT_TIMEOUT = 60 * 60  # 1 hour
 CLIPBOARD_CLEAR_TIME = 300 * 1000  # 5 minutes in milliseconds
 DEFAULT_FONT_SIZE = 12
 IMAGE_MAGIC = b"ERICAIMG1"
-WINDOWS_APP_ID = "MinThutaSawNaing.EricaSecureTextEditor.3.1"
+APP_VERSION = "3.2"
+DOCUMENT_EXTENSION = ".erica"
+LEGACY_DOCUMENT_EXTENSION = ".enc"
+OPEN_DOCUMENT_FILTER = "Erica Secure Files (*.erica *.enc);;Legacy Encrypted Files (*.enc)"
+SAVE_DOCUMENT_FILTER = "Erica Secure Files (*.erica)"
+WINDOWS_APP_ID = f"MinThutaSawNaing.EricaSecureTextEditor.{APP_VERSION}"
 RECENT_FILES_LIMIT = 10
 RECOVERY_AUTOSAVE_INTERVAL_MS = 60 * 1000
 _CRYPTO_CACHE = None
@@ -51,6 +56,13 @@ def set_windows_app_id():
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
     except Exception:
         pass
+
+
+def ensure_document_extension(path):
+    root, ext = os.path.splitext(path)
+    if ext:
+        return path
+    return f"{root}{DOCUMENT_EXTENSION}"
 
 
 def get_crypto():
@@ -324,7 +336,7 @@ class ClickableTextBrowser(QTextBrowser):
 class MainWindow(QMainWindow):
     def __init__(self, initial_file=None):
         super().__init__()
-        self.setWindowTitle("Erica Secure Text Editor 3.1")
+        self.setWindowTitle(f"Erica Secure Text Editor {APP_VERSION}")
         self.app_icon = QIcon(resource_path("icon.ico"))
         self.setWindowIcon(self.app_icon)
         self.resize(1000, 650)
@@ -1083,10 +1095,11 @@ class MainWindow(QMainWindow):
                 self,
                 "Save As Encrypted",
                 "",
-                "Encrypted Files (*.enc)"
+                SAVE_DOCUMENT_FILTER
             )
             if not file_path:
                 return False
+            file_path = ensure_document_extension(file_path)
             self.open_documents[index]['path'] = file_path
             
         password = self.open_documents[index].get('password')
@@ -1213,7 +1226,7 @@ class MainWindow(QMainWindow):
                 self,
                 "Open Encrypted File", 
                 "", 
-                "Encrypted Files (*.enc)"
+                OPEN_DOCUMENT_FILTER
             )
             if not path:
                 return
@@ -1322,10 +1335,11 @@ class MainWindow(QMainWindow):
             self,
             "Save As Encrypted",
             "",
-            "Encrypted Files (*.enc)"
+            SAVE_DOCUMENT_FILTER
         )
         if not path:
             return
+        path = ensure_document_extension(path)
             
         password = self.prompt_password("Encrypt File", show_strength=True)
         if not password:
@@ -1964,13 +1978,13 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "About Erica",
-            "Erica Secure Text Editor v3.1\n"
+            f"Erica Secure Text Editor v{APP_VERSION}\n"
             "––––––––––––––––––––––––––––––––––––––––––––––––––––––\n"
             "This application was proudly developed by Min Thuta Saw Naing (Eric),\n"
             "a Network Security Engineer from Myanmar.\n\n"
             "Erica empowers users with local-only, secure text encryption — designed\n"
             "to be simple, elegant, and professionally hardened.\n\n"
-            "🔐 Key Features in v3.1:\n"
+            f"🔐 Key Features in v{APP_VERSION}:\n"
             "• AES-256 encryption with HMAC-SHA256 integrity validation\n"
             "• Secure auto-lock timer with user-controlled duration\n"
             "• Clipboard auto-clear after 5 minutes\n"
@@ -1978,6 +1992,7 @@ class MainWindow(QMainWindow):
             "• Password strength meter during encryption setup\n"
             "• Secure editor wipe after saving\n"
             "• Multi-tab support for concurrent editing\n"
+            "• Windows Open With support for .erica secure documents\n"
             "• Standard keyboard shortcuts for common actions\n\n"
             "🧪 Special Thanks:\n"
             "• Sai Nay Zin Tun – Penetration Tester, for security audit and reporting\n"
