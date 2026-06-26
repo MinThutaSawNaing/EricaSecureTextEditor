@@ -56,7 +56,8 @@ From a recruiter or hiring-manager perspective, this repository highlights:
 ### Distribution
 
 - PyInstaller spec for generating a Windows executable
-- Inno Setup script for creating an installer
+- Inno Setup script for creating a Windows installer
+- `release/` folder for distributable Windows artifacts
 - Application icon and packaged UI assets included in the repo
 
 ## Tech Stack
@@ -70,7 +71,7 @@ From a recruiter or hiring-manager perspective, this repository highlights:
 
 ## Architecture Highlights
 
-The application is implemented in a single primary desktop entrypoint, [`erica_secure_text_editor.py`](/d:/D/my%20software/Version3.0/erica_secure_text_editor.py), which combines:
+The application is implemented in a single primary desktop entrypoint, [`erica_secure_text_editor.py`](./erica_secure_text_editor.py), which combines:
 
 - encryption and decryption utilities
 - configuration and session persistence
@@ -81,9 +82,10 @@ The application is implemented in a single primary desktop entrypoint, [`erica_s
 
 Supporting project files:
 
-- [`erica_secure_text_editor.spec`](/d:/D/my%20software/Version3.0/erica_secure_text_editor.spec) for executable builds
-- [`erica_secure_text_editor.iss`](/d:/D/my%20software/Version3.0/erica_secure_text_editor.iss) for installer creation
-- [`test_erica_secure_text_editor.py`](/d:/D/my%20software/Version3.0/test_erica_secure_text_editor.py) for automated verification
+- [`erica_secure_text_editor.spec`](./erica_secure_text_editor.spec) for executable builds
+- [`erica_secure_text_editor.iss`](./erica_secure_text_editor.iss) for installer creation
+- [`release/README.md`](./release/README.md) for release artifact notes
+- [`test_erica_secure_text_editor.py`](./test_erica_secure_text_editor.py) for automated verification
 
 ## Quick Start
 
@@ -109,11 +111,25 @@ pyinstaller erica_secure_text_editor.spec
 
 The generated executable is placed in `dist/`.
 
-### Create the installer
+### Create the installer script output
 
-Use the included Inno Setup script:
+Use the included Inno Setup script after the executable has been built:
 
-[`erica_secure_text_editor.iss`](/d:/D/my%20software/Version3.0/erica_secure_text_editor.iss)
+```bash
+iscc erica_secure_text_editor.iss
+```
+
+The installer is written to `release/` as `EricaSecureTextEditorSetup_3.1.exe`.
+
+### Release folder
+
+The `release/` folder is intended to hold the Windows deliverables for sharing or publishing:
+
+- `EricaSecureTextEditor.exe`
+- `EricaSecureTextEditorSetup_3.1.exe`
+- `erica_secure_text_editor.iss`
+
+This keeps the checked-in distribution artifacts separate from the transient `dist/` and `build/` directories.
 
 ## Run Tests
 
