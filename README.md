@@ -8,7 +8,7 @@ This project is a strong portfolio example of applied desktop engineering: secur
 
 Download the Windows builds directly from the committed [`release/`](./release/) folder:
 
-- Recommended installer: [`EricaSecureTextEditorSetup_3.2.exe`](./release/EricaSecureTextEditorSetup_3.2.exe)
+- Recommended installer: [`EricaSecureTextEditorSetup_3.3.exe`](./release/EricaSecureTextEditorSetup_3.3.exe)
 - Portable executable: [`EricaSecureTextEditor.exe`](./release/EricaSecureTextEditor.exe)
 
 The installer is the recommended option because it adds Start Menu and desktop shortcuts and registers Erica for Windows `Open with` support for `.erica` secure documents.
@@ -47,6 +47,8 @@ From a recruiter or hiring-manager perspective, this repository highlights:
 - Clipboard auto-clear for copied sensitive content
 - Read-only protection applied to encrypted output files after save
 - Encrypted recovery snapshots for unsaved work
+- Recovery key is protected with Windows DPAPI before being written to local config storage
+- External links from note content are restricted to `http` and `https`
 
 ### Editor Experience
 
@@ -130,14 +132,14 @@ Use the included Inno Setup script after the executable has been built:
 iscc erica_secure_text_editor.iss
 ```
 
-The installer is written to `release/` as `EricaSecureTextEditorSetup_3.2.exe`.
+The installer is written to `release/` as `EricaSecureTextEditorSetup_3.3.exe`.
 
 ### Release folder
 
 The `release/` folder is intended to hold the Windows deliverables for sharing or publishing:
 
 - `EricaSecureTextEditor.exe`
-- `EricaSecureTextEditorSetup_3.2.exe`
+- `EricaSecureTextEditorSetup_3.3.exe`
 - `erica_secure_text_editor.iss`
 
 This keeps the checked-in distribution artifacts separate from the transient `dist/` and `build/` directories.
@@ -153,7 +155,9 @@ Current automated coverage includes:
 - encryption and decryption roundtrip behavior
 - recent files and last-session persistence
 - encrypted recovery snapshot creation and restore validation
+- recovery-key migration and protected local storage behavior
 - save and re-save behavior for encrypted files
+- safe external link allow/block behavior
 - idle-timeout shutdown logic
 - table creation, merge, split, row, and column operations
 
@@ -161,8 +165,11 @@ Current automated coverage includes:
 
 - Encryption is performed locally on the device
 - The app does not require user accounts or network services
-- Passwords are not persisted as part of a remote authentication system
+- Passwords are not persisted as part of a remote authentication system or retained in document state after use
 - Integrity validation is built into the encrypted file format
+- Recovery snapshots are encrypted and their local recovery key is protected with Windows DPAPI on Windows systems
+- Sensitive local metadata files are hardened to the current user where supported by the host OS
+- “Clear Editor Contents” removes text from the current session but should not be treated as a guaranteed forensic memory wipe
 
 This project is designed to reduce exposure by keeping note creation, encryption, and storage on the user-controlled machine.
 

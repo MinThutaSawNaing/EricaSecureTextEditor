@@ -1,5 +1,5 @@
-# Erica Secure Text Editor v3.2 - Windows file association support
-import sys, os, json, secrets, re, hmac, ctypes
+# Erica Secure Text Editor v3.3 - Windows file association support
+import sys, os, json, secrets, re, hmac, ctypes, base64, subprocess
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QInputDialog,
     QMessageBox, QLineEdit, QStatusBar, QLabel, QDialog, QColorDialog,
@@ -29,7 +29,7 @@ DEFAULT_TIMEOUT = 60 * 60  # 1 hour
 CLIPBOARD_CLEAR_TIME = 300 * 1000  # 5 minutes in milliseconds
 DEFAULT_FONT_SIZE = 12
 IMAGE_MAGIC = b"ERICAIMG1"
-APP_VERSION = "3.2"
+APP_VERSION = "3.3"
 DOCUMENT_EXTENSION = ".erica"
 LEGACY_DOCUMENT_EXTENSION = ".enc"
 OPEN_DOCUMENT_FILTER = "Erica Secure Files (*.erica *.enc);;Legacy Encrypted Files (*.enc)"
@@ -38,6 +38,16 @@ WINDOWS_APP_ID = f"MinThutaSawNaing.EricaSecureTextEditor.{APP_VERSION}"
 RECENT_FILES_LIMIT = 10
 RECOVERY_AUTOSAVE_INTERVAL_MS = 60 * 1000
 _CRYPTO_CACHE = None
+_TEST_RECOVERY_KEY_PROTECTOR = None
+_TEST_RECOVERY_KEY_UNPROTECTOR = None
+_TEST_HARDEN_PRIVATE_FILE_HOOK = None
+
+
+class DATA_BLOB(ctypes.Structure):
+    _fields_ = [
+        ("cbData", ctypes.c_uint32),
+        ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
+    ]
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -47,6 +57,121 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+
+def _bytes_to_blob(data: bytes):
+    buffer = ctypes.create_string_buffer(data)
+    blob = DATA_BLOB(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    return blob, buffer
+
+
+def _blob_to_bytes(blob) -> bytes:
+    if not blob.cbData:
+        return b""
+    return ctypes.string_at(blob.pbData, blob.cbData)
+
+
+def protect_local_secret(secret: str) -> str:
+    if _TEST_RECOVERY_KEY_PROTECTOR is not None:
+        return _TEST_RECOVERY_KEY_PROTECTOR(secret)
+
+    secret_bytes = secret.encode("utf-8")
+    if not sys.platform.startswith('win') or not hasattr(ctypes, "windll"):
+        return base64.b64encode(secret_bytes).decode("ascii")
+
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    in_blob, in_buffer = _bytes_to_blob(secret_bytes)
+    out_blob = DATA_BLOB()
+    if not crypt32.CryptProtectData(
+        ctypes.byref(in_blob),
+        None,
+        None,
+        None,
+        None,
+        0,
+        ctypes.byref(out_blob),
+    ):
+        raise ctypes.WinError()
+
+    try:
+        return base64.b64encode(_blob_to_bytes(out_blob)).decode("ascii")
+    finally:
+        if out_blob.pbData:
+            kernel32.LocalFree(out_blob.pbData)
+        in_buffer.value = b"\x00" * len(secret_bytes)
+
+
+def unprotect_local_secret(protected_secret: str) -> str:
+    if _TEST_RECOVERY_KEY_UNPROTECTOR is not None:
+        return _TEST_RECOVERY_KEY_UNPROTECTOR(protected_secret)
+
+    protected_bytes = base64.b64decode(protected_secret.encode("ascii"))
+    if not sys.platform.startswith('win') or not hasattr(ctypes, "windll"):
+        return protected_bytes.decode("utf-8")
+
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    in_blob, in_buffer = _bytes_to_blob(protected_bytes)
+    out_blob = DATA_BLOB()
+    if not crypt32.CryptUnprotectData(
+        ctypes.byref(in_blob),
+        None,
+        None,
+        None,
+        None,
+        0,
+        ctypes.byref(out_blob),
+    ):
+        raise ctypes.WinError()
+
+    try:
+        return _blob_to_bytes(out_blob).decode("utf-8")
+    finally:
+        if out_blob.pbData:
+            kernel32.LocalFree(out_blob.pbData)
+        in_buffer.value = b"\x00" * len(protected_bytes)
+
+
+def is_safe_external_url(url: str) -> bool:
+    parsed = QUrl(url)
+    if not parsed.isValid() or parsed.isLocalFile():
+        return False
+    return parsed.scheme().lower() in {"http", "https"} and bool(parsed.host())
+
+
+def harden_private_file(path):
+    if _TEST_HARDEN_PRIVATE_FILE_HOOK is not None:
+        _TEST_HARDEN_PRIVATE_FILE_HOOK(path)
+        return
+
+    if not path or not os.path.exists(path):
+        return
+
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+    if not sys.platform.startswith('win'):
+        return
+
+    username = os.getenv("USERNAME") or os.getlogin()
+    try:
+        subprocess.run(
+            [
+                "icacls",
+                path,
+                "/inheritance:r",
+                "/grant:r",
+                f"{username}:(R,W)",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except Exception:
+        pass
 
 
 def set_windows_app_id():
@@ -173,13 +298,14 @@ def load_config():
     try:
         with open(CONFIG_FILE, 'r') as f:
             return json.load(f)
-    except:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return {}
 
 def save_config(data):
     os.makedirs(CONFIG_PATH, exist_ok=True)
     with open(CONFIG_FILE, 'w') as f:
         json.dump(data, f)
+    harden_private_file(CONFIG_FILE)
 
 def load_theme():
     return load_config().get("theme", "dark")
@@ -215,11 +341,20 @@ def save_last_session_files(paths):
 
 def get_recovery_key():
     config = load_config()
-    recovery_key = config.get("recovery_key")
+    protected_recovery_key = config.get("recovery_key_protected")
+    if protected_recovery_key:
+        try:
+            return unprotect_local_secret(protected_recovery_key)
+        except Exception:
+            config.pop("recovery_key_protected", None)
+
+    legacy_recovery_key = config.pop("recovery_key", None)
+    recovery_key = legacy_recovery_key
     if not recovery_key:
         recovery_key = secrets.token_hex(32)
-        config["recovery_key"] = recovery_key
-        save_config(config)
+
+    config["recovery_key_protected"] = protect_local_secret(recovery_key)
+    save_config(config)
     return recovery_key
 
 def check_password_strength(password):
@@ -311,8 +446,10 @@ class ClickableTextBrowser(QTextBrowser):
             # Check if the mouse was released over an anchor (link)
             anchor = self.anchorAt(event.pos())
             if anchor:
-                # If it's a link, open it using QDesktopServices
-                QDesktopServices.openUrl(QUrl(anchor))
+                if is_safe_external_url(anchor):
+                    QDesktopServices.openUrl(QUrl(anchor))
+                else:
+                    QMessageBox.warning(self, "Blocked Link", "Only http:// and https:// links can be opened.")
                 return  # Consume the event so the text editor doesn't process it further
         # For any other mouse release event (e.g., not on a link, or right-click),
         # pass it to the base class to handle text selection, etc.
@@ -404,13 +541,10 @@ class MainWindow(QMainWindow):
     def set_current_password(self, password):
         current_index = self.tabs.currentIndex()
         if current_index != -1 and self.open_documents and current_index < len(self.open_documents):
-            self.open_documents[current_index]['password'] = password
+            self.open_documents[current_index]['password'] = None
 
     def get_current_password(self):
-        current_index = self.tabs.currentIndex()
-        if current_index == -1 or not self.open_documents or current_index >= len(self.open_documents):
-            return None
-        return self.open_documents[current_index].get('password')
+        return None
 
     # Text Formatting Methods
     def apply_bold(self):
@@ -511,6 +645,9 @@ class MainWindow(QMainWindow):
 
     def openExternalLink(self, url):
         """Open clicked links in default browser"""
+        if not is_safe_external_url(url):
+            QMessageBox.warning(self, "Blocked Link", "Only http:// and https:// links can be opened.")
+            return
         QDesktopServices.openUrl(QUrl(url))
 
     def insert_table(self):
@@ -1030,6 +1167,7 @@ class MainWindow(QMainWindow):
             os.makedirs(CONFIG_PATH, exist_ok=True)
             with open(RECOVERY_FILE, 'wb') as recovery_file:
                 recovery_file.write(encrypted)
+            harden_private_file(RECOVERY_FILE)
         except Exception:
             pass
 
@@ -1257,12 +1395,10 @@ class MainWindow(QMainWindow):
                     and not self.current_editor.toPlainText()):
                 self.current_editor.setHtml(text)
                 self.set_current_file_path(path)
-                self.set_current_password(password)
                 self.current_editor.document().setModified(False)
                 self.status.showMessage(f"Opened: {os.path.basename(path)}")
             else:
                 self.add_new_tab(file_path=path, content=text, content_is_html=True)
-                self.open_documents[self.tabs.currentIndex()]['password'] = password
                 self.status.showMessage(f"Opened: {os.path.basename(path)}")
             save_recent_file(path)
             self.refresh_recent_files_menu()
@@ -1281,19 +1417,17 @@ class MainWindow(QMainWindow):
 
         if self.current_file_path:
             try:
-                password = self.get_current_password()
-                if not password:
-                    # Read existing file to determine if it's encrypted
-                    with open(self.current_file_path, 'rb') as f:
-                        data = f.read()
+                # Read existing file to determine if it's encrypted
+                with open(self.current_file_path, 'rb') as f:
+                    data = f.read()
 
-                    # If data exists and is long enough to be encrypted, prompt for existing password
-                    # Otherwise, it's a new file or an unencrypted file being saved for the first time
-                    if len(data) >= 48: # Minimum size for salt (16) + IV (16) + HMAC (32)
-                        password = self.prompt_password("Enter Password")
-                    else:
-                        password = self.prompt_password("Set Password", show_strength=True)
-                    
+                # If data exists and is long enough to be encrypted, prompt for existing password
+                # Otherwise, it's a new file or an unencrypted file being saved for the first time
+                if len(data) >= 48: # Minimum size for salt (16) + IV (16) + HMAC (32)
+                    password = self.prompt_password("Enter Password")
+                else:
+                    password = self.prompt_password("Set Password", show_strength=True)
+
                 if not password:
                     return
                     
@@ -1303,7 +1437,6 @@ class MainWindow(QMainWindow):
                     f.write(encrypted)
                     
                 os.chmod(self.current_file_path, 0o444)
-                self.set_current_password(password)
                 self.current_editor.document().setModified(False)
                 save_recent_file(self.current_file_path)
                 self.refresh_recent_files_menu()
@@ -1353,7 +1486,6 @@ class MainWindow(QMainWindow):
                 
             os.chmod(path, 0o444)
             self.set_current_file_path(path)
-            self.set_current_password(password)
             self.current_editor.document().setModified(False)
             save_recent_file(path)
             self.refresh_recent_files_menu()
@@ -1412,7 +1544,7 @@ class MainWindow(QMainWindow):
         self.set_current_password(None)
         self.current_editor.document().setModified(False)
         self.tabs.setCurrentIndex(self.tabs.currentIndex())  # Refresh tab
-        QMessageBox.information(self, "Secure Clear", "Editor cleared.")
+        QMessageBox.information(self, "Clear Editor", "Editor contents cleared from the current session.")
         
     def wheelEvent(self, event):
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
@@ -1767,7 +1899,7 @@ class MainWindow(QMainWindow):
 
         edit_menu.addSeparator()
 
-        secure_clear_action = QAction("Secure Clear", self)
+        secure_clear_action = QAction("Clear Editor Contents", self)
         secure_clear_action.triggered.connect(self.secure_clear_editor)
         edit_menu.addAction(secure_clear_action)
 
@@ -1990,7 +2122,7 @@ class MainWindow(QMainWindow):
             "• Clipboard auto-clear after 5 minutes\n"
             "• Files saved as read-only with manual unlock option\n"
             "• Password strength meter during encryption setup\n"
-            "• Secure editor wipe after saving\n"
+            "• Editor content clearing after saving\n"
             "• Multi-tab support for concurrent editing\n"
             "• Windows Open With support for .erica secure documents\n"
             "• Standard keyboard shortcuts for common actions\n\n"

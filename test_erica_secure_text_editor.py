@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from unittest.mock import patch
+from PyQt6.QtCore import QPoint
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -18,10 +19,17 @@ class EricaAppTests(unittest.TestCase):
         appmod.CONFIG_PATH = self.temp_dir.name
         appmod.CONFIG_FILE = os.path.join(self.temp_dir.name, "config.json")
         appmod.RECOVERY_FILE = os.path.join(self.temp_dir.name, "recovery.enc")
+        appmod._TEST_RECOVERY_KEY_PROTECTOR = lambda secret: f"protected::{secret}"
+        appmod._TEST_RECOVERY_KEY_UNPROTECTOR = lambda secret: secret.split("protected::", 1)[1]
+        self.hardened_paths = []
+        appmod._TEST_HARDEN_PRIVATE_FILE_HOOK = self.hardened_paths.append
         self.window = appmod.MainWindow()
 
     def tearDown(self):
         self.window.close()
+        appmod._TEST_RECOVERY_KEY_PROTECTOR = None
+        appmod._TEST_RECOVERY_KEY_UNPROTECTOR = None
+        appmod._TEST_HARDEN_PRIVATE_FILE_HOOK = None
         self.temp_dir.cleanup()
 
     def test_encrypt_roundtrip(self):
@@ -50,6 +58,11 @@ class EricaAppTests(unittest.TestCase):
             recovered = appmod.decrypt_bytes(handle.read(), appmod.get_recovery_key())
         self.assertIn("recover me", recovered.decode("utf-8"))
 
+        config = appmod.load_config()
+        self.assertNotIn("recovery_key", config)
+        self.assertTrue(config["recovery_key_protected"].startswith("protected::"))
+        self.assertIn(appmod.RECOVERY_FILE, self.hardened_paths)
+
     def test_save_and_resave_same_file(self):
         fd, path = tempfile.mkstemp(dir=self.temp_dir.name, suffix=".erica")
         os.close(fd)
@@ -66,6 +79,56 @@ class EricaAppTests(unittest.TestCase):
         with open(path, "rb") as handle:
             decrypted = appmod.decrypt_text(handle.read(), "Passw0rd!")
         self.assertIn("second", decrypted)
+        self.assertIsNone(self.window.get_current_password())
+
+    def test_get_recovery_key_migrates_legacy_plaintext_key(self):
+        appmod.save_config({"recovery_key": "legacy-secret"})
+
+        recovered_key = appmod.get_recovery_key()
+
+        self.assertEqual(recovered_key, "legacy-secret")
+        config = appmod.load_config()
+        self.assertNotIn("recovery_key", config)
+        self.assertEqual(config["recovery_key_protected"], "protected::legacy-secret")
+        self.assertIn(appmod.CONFIG_FILE, self.hardened_paths)
+
+    def test_open_external_link_blocks_unsafe_scheme(self):
+        with patch.object(appmod.QMessageBox, "warning") as warning_mock, \
+             patch.object(appmod.QDesktopServices, "openUrl") as open_mock:
+            self.window.openExternalLink("file:///C:/secret.txt")
+
+        warning_mock.assert_called_once()
+        open_mock.assert_not_called()
+
+    def test_open_external_link_allows_https(self):
+        with patch.object(appmod.QMessageBox, "warning") as warning_mock, \
+             patch.object(appmod.QDesktopServices, "openUrl") as open_mock:
+            self.window.openExternalLink("https://example.com")
+
+        warning_mock.assert_not_called()
+        open_mock.assert_called_once()
+
+    def test_editor_anchor_blocks_unsafe_link(self):
+        editor = appmod.ClickableTextBrowser()
+
+        with patch.object(editor, "anchorAt", return_value="file:///C:/secret.txt"), \
+             patch.object(appmod.QMessageBox, "warning") as warning_mock, \
+             patch.object(appmod.QDesktopServices, "openUrl") as open_mock:
+            class _Event:
+                def button(self):
+                    return appmod.Qt.MouseButton.LeftButton
+
+                def pos(self):
+                    return QPoint(0, 0)
+
+            editor.mouseReleaseEvent(_Event())
+
+        warning_mock.assert_called_once()
+        open_mock.assert_not_called()
+
+    def test_save_config_hardens_private_file(self):
+        appmod.save_config({"theme": "dark"})
+        self.assertIn(appmod.CONFIG_FILE, self.hardened_paths)
 
     def test_save_adds_erica_extension_when_missing(self):
         path = os.path.join(self.temp_dir.name, "notes")
