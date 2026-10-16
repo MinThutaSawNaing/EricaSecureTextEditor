@@ -1,5 +1,6 @@
 # Erica Secure Text Editor v3.4 - Table editing and installer improvements
 import sys, os, json, secrets, re, hmac, ctypes, base64, subprocess
+from erica_storage import atomic_write, validate_encrypted
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QInputDialog,
     QMessageBox, QLineEdit, QStatusBar, QLabel, QDialog, QColorDialog,
@@ -254,9 +255,8 @@ def encrypt_bytes(raw: bytes, password: str) -> bytes:
     return full_data + tag
 
 def decrypt_bytes(data: bytes, password: str) -> bytes:
+    validate_encrypted(data)
     crypto = get_crypto()
-    if len(data) < 48:
-        raise ValueError("Data too short to be valid.")
     salt, iv = data[:16], data[16:32]
     tag = data[-32:]
     encrypted = data[32:-32]
@@ -303,8 +303,7 @@ def load_config():
 
 def save_config(data):
     os.makedirs(CONFIG_PATH, exist_ok=True)
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(data, f)
+    atomic_write(CONFIG_FILE, json.dumps(data).encode("utf-8"))
     harden_private_file(CONFIG_FILE)
 
 def load_theme():
@@ -1192,8 +1191,7 @@ class MainWindow(QMainWindow):
                 get_recovery_key()
             )
             os.makedirs(CONFIG_PATH, exist_ok=True)
-            with open(RECOVERY_FILE, 'wb') as recovery_file:
-                recovery_file.write(encrypted)
+            atomic_write(RECOVERY_FILE, encrypted, encrypted=True)
             harden_private_file(RECOVERY_FILE)
         except Exception:
             pass
@@ -1265,23 +1263,18 @@ class MainWindow(QMainWindow):
             if not file_path:
                 return False
             file_path = ensure_document_extension(file_path)
-            self.open_documents[index]['path'] = file_path
             
-        password = self.open_documents[index].get('password')
-        if not password:
-            password = self.prompt_password("Encrypt File", show_strength=True)
+        # Never retain the password in per-document state, including tab-close saves.
+        self.open_documents[index]['password'] = None
+        password = self.prompt_password("Encrypt File", show_strength=True)
         if not password:
             return False
             
         try:
             encrypted = encrypt_text(editor.toHtml(), password)
-            self._ensure_file_writable(file_path)
-            with open(file_path, 'wb') as f:
-                f.write(encrypted)
-                
-            os.chmod(file_path, 0o444)  # Read-only
+            atomic_write(file_path, encrypted, read_only=True, encrypted=True)
             editor.document().setModified(False)
-            self.open_documents[index]['password'] = password
+            self.open_documents[index]['path'] = file_path
             self.tabs.setTabText(index, os.path.basename(file_path))
             save_recent_file(file_path)
             self.refresh_recent_files_menu()
@@ -1298,10 +1291,6 @@ class MainWindow(QMainWindow):
             editor.textChanged.disconnect()
         except TypeError:
             pass
-
-    def _ensure_file_writable(self, path):
-        if os.path.exists(path):
-            os.chmod(path, 0o666)
 
     def encrypt_image_file(self):
         image_path, _ = QFileDialog.getOpenFileName(
@@ -1333,11 +1322,7 @@ class MainWindow(QMainWindow):
 
             payload = pack_image_payload(image_bytes, os.path.splitext(image_path)[1])
             encrypted = encrypt_bytes(payload, password)
-            self._ensure_file_writable(encrypted_path)
-            with open(encrypted_path, 'wb') as encrypted_file:
-                encrypted_file.write(encrypted)
-
-            os.chmod(encrypted_path, 0o444)
+            atomic_write(encrypted_path, encrypted, read_only=True, encrypted=True)
             self.status.showMessage(f"Encrypted image: {os.path.basename(encrypted_path)}")
             QMessageBox.information(self, "Image Encrypted", "Image encrypted successfully.")
         except Exception as e:
@@ -1373,9 +1358,7 @@ class MainWindow(QMainWindow):
             if not output_path:
                 return
 
-            self._ensure_file_writable(output_path)
-            with open(output_path, 'wb') as output_file:
-                output_file.write(image_bytes)
+            atomic_write(output_path, image_bytes)
 
             self.status.showMessage(f"Decrypted image: {os.path.basename(output_path)}")
             QMessageBox.information(self, "Image Decrypted", "Image decrypted successfully.")
@@ -1444,13 +1427,8 @@ class MainWindow(QMainWindow):
 
         if self.current_file_path:
             try:
-                # Read existing file to determine if it's encrypted
-                with open(self.current_file_path, 'rb') as f:
-                    data = f.read()
-
-                # If data exists and is long enough to be encrypted, prompt for existing password
-                # Otherwise, it's a new file or an unencrypted file being saved for the first time
-                if len(data) >= 48: # Minimum size for salt (16) + IV (16) + HMAC (32)
+                # Only file size is needed; do not read the entire old ciphertext.
+                if os.path.getsize(self.current_file_path) >= 80:
                     password = self.prompt_password("Enter Password")
                 else:
                     password = self.prompt_password("Set Password", show_strength=True)
@@ -1459,11 +1437,7 @@ class MainWindow(QMainWindow):
                     return
                     
                 encrypted = encrypt_text(self.current_editor.toHtml(), password)
-                self._ensure_file_writable(self.current_file_path)
-                with open(self.current_file_path, 'wb') as f:
-                    f.write(encrypted)
-                    
-                os.chmod(self.current_file_path, 0o444)
+                atomic_write(self.current_file_path, encrypted, read_only=True, encrypted=True)
                 self.current_editor.document().setModified(False)
                 save_recent_file(self.current_file_path)
                 self.refresh_recent_files_menu()
@@ -1507,11 +1481,7 @@ class MainWindow(QMainWindow):
 
         try:
             encrypted = encrypt_text(self.current_editor.toHtml(), password)
-            self._ensure_file_writable(path)
-            with open(path, 'wb') as f:
-                f.write(encrypted)
-                
-            os.chmod(path, 0o444)
+            atomic_write(path, encrypted, read_only=True, encrypted=True)
             self.set_current_file_path(path)
             self.current_editor.document().setModified(False)
             save_recent_file(path)

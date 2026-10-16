@@ -38,6 +38,7 @@ function Assert-Artifact {
 $root = $PSScriptRoot
 $installerSource = Join-Path $root 'erica_secure_text_editor.iss'
 $spec = Join-Path $root 'erica_secure_text_editor.spec'
+$nativeBuild = Join-Path $root 'build_native.ps1'
 $release = Join-Path $root 'release'
 $portable = Join-Path $root 'dist\EricaSecureTextEditor.exe'
 $manifest = Join-Path $release 'SHA256SUMS.txt'
@@ -50,7 +51,7 @@ if (Test-Path -LiteralPath $manifest) {
 # Resolve commands once; all subsequent tool/file paths are absolute.
 $python = (Get-Command -Name $PythonExe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $iscc = (Get-Command -Name $IsccExe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-foreach ($file in @($installerSource, $spec,
+foreach ($file in @($installerSource, $spec, $nativeBuild,
     (Join-Path $root 'erica_secure_text_editor.py'),
     (Join-Path $root 'test_erica_secure_text_editor.py'),
     (Join-Path $root 'icon.ico'), (Join-Path $root 'closebutton.png'),
@@ -73,6 +74,8 @@ $oldQtPlatform = [Environment]::GetEnvironmentVariable('QT_QPA_PLATFORM', 'Proce
 Push-Location -LiteralPath $root
 try {
     Invoke-Checked $python @('-c', "import struct, sys; import PyQt6, cryptography, PyInstaller; sys.exit(0 if sys.platform == 'win32' and struct.calcsize('P') == 8 else '64-bit Windows Python is required')")
+    & $nativeBuild
+    Assert-Artifact (Join-Path $root 'erica_storage.dll')
     $env:QT_QPA_PLATFORM = 'offscreen'
     Invoke-Checked $python @('-B', '-m', 'unittest', 'discover', '-s', $root, '-p', 'test_*.py', '-v')
 

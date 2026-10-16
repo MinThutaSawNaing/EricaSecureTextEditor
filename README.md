@@ -118,7 +118,17 @@ Supporting project files:
 pip install -r requirements.txt
 ```
 
-### 2. Run the application
+### 2. Build the Rust storage module
+
+Install a 64-bit Windows Rust MSVC toolchain and Visual Studio C++ Build Tools, then run:
+
+```powershell
+& 'D:\Erica Text Editor\EricaSecureTextEditor\build_native.ps1'
+```
+
+This runs the native tests and builds `erica_storage.dll` offline with no third-party Rust dependencies. Rebuild it after changing the native source. The DLL is required for running from source; there is no silent Python storage fallback. Packaged applications bundle it automatically.
+
+### 3. Run the application
 
 ```bash
 python erica_secure_text_editor.py
@@ -132,7 +142,7 @@ For the complete test, executable, installer, and checksum pipeline, run:
 & 'D:\Erica Text Editor\EricaSecureTextEditor\build_windows.ps1'
 ```
 
-Requires 64-bit Windows Python with the dependencies and PyInstaller installed, plus Inno Setup 6. The script does not install dependencies or upload files. Override `-PythonExe` or `-IsccExe` if necessary.
+Requires 64-bit Windows Python with the dependencies and PyInstaller installed, the Windows Rust MSVC toolchain with C++ Build Tools, plus Inno Setup 6. The script builds/tests the native module first and does not install dependencies or upload files. Override `-PythonExe` or `-IsccExe` if necessary.
 
 ### Create the executable
 
@@ -165,7 +175,7 @@ This keeps the checked-in distribution artifacts separate from the transient `di
 ## Run Tests
 
 ```bash
-python -m unittest test_erica_secure_text_editor.py
+python -m unittest discover -v
 ```
 
 Current automated coverage includes:
@@ -178,6 +188,15 @@ Current automated coverage includes:
 - safe external link allow/block behavior
 - idle-timeout shutdown logic
 - table creation, merge, split, row, and column operations
+- native file replacement, read-only files, Unicode paths, failed commits, and malformed encrypted envelopes
+
+## Rust storage integration (development)
+
+The source now uses a small dependency-free Rust DLL for same-directory temporary-file writes and legacy encrypted-envelope structure validation. Document saves, recovery snapshots, configuration, and image output use this module. Python's established `cryptography` dependency still performs encryption and authentication; the existing file format is unchanged. A structural validation pass is not authentication.
+
+Writes synchronize the temporary file before replacement and avoid truncating the previous file on pre-commit failure. Existing destination DACL policy and protection status are copied to the empty temporary file before any bytes are written; a security-copy error fails closed. New files inherit the trusted parent directory policy. Owner, audit settings, integrity labels, alternate streams, and other metadata are not preserved. This is not a guarantee against power loss, malicious concurrent filesystem changes, or forensic recovery. Parents must already exist and be trusted. Native error codes propagate to the caller. Tab-close saves no longer retain passwords in document state.
+
+This is a storage-safety change, not a measured performance improvement. Background workers, streaming encryption, native DPAPI migration, and word-count optimization are not included. The checked-in 3.4 downloads remain the previously published builds and do not yet contain this development integration.
 
 ## Security Notes
 

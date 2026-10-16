@@ -7,3 +7,5 @@ dist/
 *.log
 Thumbs.db
 Desktop.ini
+/erica_storage.dll
+target/
