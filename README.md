@@ -8,13 +8,21 @@ This project is a strong portfolio example of applied desktop engineering: secur
 
 Download the Windows builds directly from the committed [`release/`](./release/) folder:
 
-- Recommended installer: [Download Erica 3.4 for Windows](./release/EricaSecureTextEditorSetup_3.4.exe?raw=true)
+- Recommended installer: [Download Erica 3.5 for Windows](./release/EricaSecureTextEditorSetup_3.5.exe?raw=true)
 - Portable executable: [Download without installation](./release/EricaSecureTextEditor.exe?raw=true)
 - Integrity checks: [`SHA256SUMS.txt`](./release/SHA256SUMS.txt)
 
 The installer is recommended: fresh installations default to the current user without administrator access, with an all-users option when needed. It adds a Start Menu shortcut, offers an optional desktop shortcut, and registers `.erica` Open With support without changing your default app. Existing installations retain their scope and directory when detected.
 
-### What's fixed in 3.4
+### What's new in 3.5
+
+- Familiar uncluttered layout: new formatting tools live under **right-click > Font, Paragraph, and Table**, not extra toolbars.
+- Font family/size, text colour/highlight, paragraph alignment, lists, and table styles/properties are available without changing the main window layout.
+- Cached incremental word counts and background encryption/storage/recovery improve responsiveness.
+- Windows permission subprocesses no longer flash console windows.
+- Encryption format and legacy document compatibility are unchanged.
+
+### Table editing fixes included
 
 - Tables use the editor width and put the cursor in the first cell after insertion.
 - Row and column deletion keep the cursor in the table; deleting the last row or column removes the table.
@@ -24,6 +32,19 @@ The installer is recommended: fresh installations default to the current user wi
 These builds are not code-signed; a SHA-256 checksum checks file integrity but does not replace publisher authentication. Windows may show an unknown-publisher warning.
 
 ## Project Snapshot
+
+### Responsiveness improvements included in 3.5
+
+- Cursor navigation reads a cached word total instead of converting and splitting the whole document. Rust counts words only in changed Qt text blocks, retaining Python-compatible Unicode whitespace semantics.
+- Document/image encryption, decryption, and storage operations run on joined background workers. A non-cancellable busy dialog prevents edits during an explicit operation while the interface continues processing events.
+- Periodic encrypted recovery runs in the background with one job at a time; unchanged successful snapshots are not rewritten. Clearing recovery invalidates pending work, and shutdown waits before capturing the final workspace.
+- Windows permission commands use `CREATE_NO_WINDOW` so background file hardening does not flash a console window.
+
+The encrypted-file format, password derivation, authentication checks, synchronized Rust writes, and existing destination DACL preservation are unchanged. This is not a custom cryptography implementation. Large rich-text documents still require Qt layout and HTML capture on the GUI thread, and shutdown waits for recovery to finish.
+
+The downloads above include these improvements. `release/` contains only the current portable executable, installer, matching installer source, and checksums. Generated packaging stages are removed after a successful build.
+
+Measured on the local Windows/offscreen Qt test harness: 100 cursor moves in a 100,000-word, multiline document took about 1,144 ms before this change and 1.6 ms afterward. This measures the cursor/status hot path, not overall application speed. Unchanged recovery checks on a one-million-character workspace took about 0.04 ms after adding the revision/change-epoch cache; changed snapshots still require GUI-thread HTML capture.
 
 - Built with Python and PyQt6 for a native-style desktop experience
 - Uses AES-based encrypted file storage with HMAC integrity validation
@@ -46,6 +67,18 @@ From a recruiter or hiring-manager perspective, this repository highlights:
 - Automated testing for critical application behaviors
 
 ## Core Features
+
+### Right-click font and table controls
+
+- The main window retains its familiar menu, tabs, and editor layout, without extra formatting toolbars. **Right-click in the editor** for the new controls.
+- **Font:** choose a font or point size, toggle bold/italic/underline/strikethrough, and set text colour or highlighting. Select text to format it; without a selection, font controls affect what you type next.
+- **Paragraph:** align text or add bulleted and numbered lists. Standard undo/redo and clipboard commands remain in the right-click menu.
+- **Table:** insert a table anywhere using one dialog with rows, columns, style, and an optional repeating header. Right-click inside a table for row/column controls, delete, merge/split, appearance, table properties, equal columns, fit width, cell shading, and table/row/column selection. Merge requires adjacent selected cells; split is enabled for a merged cell.
+- Existing formatting menus and shortcuts remain available, including **Ctrl+B**, **Ctrl+I**, and **Ctrl+U**.
+
+These are rich-text editing tools, not a full Microsoft Word replacement: `.docx` import/export and page-layout editing are not included. Tables and fonts continue to be stored as HTML inside Erica's existing encrypted document format.
+
+Table styles preserve mixed font families and sizes. Switching back to **Plain** restores prior colours/weight while the document stays open. After saving and reopening, Plain removes the recognised Erica style colours and header bold; the original pre-style colours/weight are not retained in HTML. Undo remains available for the style change.
 
 ### Security
 
@@ -87,6 +120,7 @@ From a recruiter or hiring-manager perspective, this repository highlights:
 
 - Python 3
 - PyQt6
+- Rust (dependency-free native storage and changed-block word counts)
 - cryptography
 - PyInstaller
 - Inno Setup
@@ -108,7 +142,11 @@ Supporting project files:
 - [`erica_secure_text_editor.spec`](./erica_secure_text_editor.spec) for executable builds
 - [`erica_secure_text_editor.iss`](./erica_secure_text_editor.iss) for installer creation
 - [`release/README.md`](./release/README.md) for release artifact notes
-- [`test_erica_secure_text_editor.py`](./test_erica_secure_text_editor.py) for automated verification
+- `erica_formatting.py` and `erica_tables.py` for context-menu editing commands
+- `erica_wordcount.py` for cached per-block word counts
+- `erica_tasks.py` for joined background tasks
+- `erica_storage.py` and `native/erica_storage/` for native storage and word counting
+- `test_*.py` for automated verification
 
 ## Quick Start
 
@@ -144,6 +182,8 @@ For the complete test, executable, installer, and checksum pipeline, run:
 
 Requires 64-bit Windows Python with the dependencies and PyInstaller installed, the Windows Rust MSVC toolchain with C++ Build Tools, plus Inno Setup 6. The script builds/tests the native module first and does not install dependencies or upload files. Override `-PythonExe` or `-IsccExe` if necessary.
 
+After success, the pipeline removes its packaging stage, duplicate portable build, and older installers. Only current downloads remain in `release/`. Close running portable builds before rebuilding. Native Cargo caches remain reusable and can be removed with `cargo clean` when no longer needed.
+
 ### Create the executable
 
 ```bash
@@ -160,15 +200,16 @@ Use the included Inno Setup script after the executable has been built:
 iscc erica_secure_text_editor.iss
 ```
 
-The installer is written to `release/` as `EricaSecureTextEditorSetup_3.4.exe`.
+The installer is written to `release/` as `EricaSecureTextEditorSetup_3.5.exe`.
 
 ### Release folder
 
 The `release/` folder is intended to hold the Windows deliverables for sharing or publishing:
 
 - `EricaSecureTextEditor.exe`
-- `EricaSecureTextEditorSetup_3.4.exe`
+- `EricaSecureTextEditorSetup_3.5.exe`
 - `erica_secure_text_editor.iss`
+- `SHA256SUMS.txt`
 
 This keeps the checked-in distribution artifacts separate from the transient `dist/` and `build/` directories.
 
@@ -190,13 +231,13 @@ Current automated coverage includes:
 - table creation, merge, split, row, and column operations
 - native file replacement, read-only files, Unicode paths, failed commits, and malformed encrypted envelopes
 
-## Rust storage integration (development)
+## Rust storage integration
 
 The source now uses a small dependency-free Rust DLL for same-directory temporary-file writes and legacy encrypted-envelope structure validation. Document saves, recovery snapshots, configuration, and image output use this module. Python's established `cryptography` dependency still performs encryption and authentication; the existing file format is unchanged. A structural validation pass is not authentication.
 
 Writes synchronize the temporary file before replacement and avoid truncating the previous file on pre-commit failure. Existing destination DACL policy and protection status are copied to the empty temporary file before any bytes are written; a security-copy error fails closed. New files inherit the trusted parent directory policy. Owner, audit settings, integrity labels, alternate streams, and other metadata are not preserved. This is not a guarantee against power loss, malicious concurrent filesystem changes, or forensic recovery. Parents must already exist and be trusted. Native error codes propagate to the caller. Tab-close saves no longer retain passwords in document state.
 
-This is a storage-safety change, not a measured performance improvement. Background workers, streaming encryption, native DPAPI migration, and word-count optimization are not included. The checked-in 3.4 downloads remain the previously published builds and do not yet contain this development integration.
+Rust storage replacement improves storage safety; the separately implemented Rust changed-block counter, cached totals, and joined background workers improve responsiveness. These changes are included in the 3.5 downloads. Encryption is not streaming, and DPAPI protection continues to use the existing Python/Windows integration.
 
 ## Security Notes
 

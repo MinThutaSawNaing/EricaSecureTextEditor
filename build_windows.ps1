@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Tests and packages Erica 3.4 using already-installed Windows build tools.
+Tests and packages Erica using already-installed Windows build tools.
 .EXAMPLE
 & 'D:\Erica Text Editor\EricaSecureTextEditor\build_windows.ps1'
 .NOTES
@@ -62,15 +62,21 @@ foreach ($file in @($installerSource, $spec, $nativeBuild,
 # Read the installer version instead of maintaining a second version constant.
 $sourceText = [IO.File]::ReadAllText($installerSource)
 $versionMatch = [regex]::Match($sourceText, '(?m)^#define MyAppVersion "(?<version>\d+\.\d+)"\s*$')
-if (-not $versionMatch.Success -or $versionMatch.Groups['version'].Value -ne '3.4') {
-    throw 'Expected installer version 3.4.'
+if (-not $versionMatch.Success) {
+    throw 'Expected a major.minor installer version.'
 }
 $version = $versionMatch.Groups['version'].Value
+$appSource = [IO.File]::ReadAllText((Join-Path $root 'erica_secure_text_editor.py'))
+$appVersion = [regex]::Match($appSource, '(?m)^APP_VERSION = "(?<version>\d+\.\d+)"\s*$')
+if (-not $appVersion.Success -or $appVersion.Groups['version'].Value -ne $version) {
+    throw 'Application and installer versions must match.'
+}
 $installerName = "EricaSecureTextEditorSetup_$version.exe"
 $sourceHash = (Get-FileHash -LiteralPath $installerSource -Algorithm SHA256).Hash
 $stage = Join-Path $root ('build\windows-' + [guid]::NewGuid().ToString('N'))
 
 $oldQtPlatform = [Environment]::GetEnvironmentVariable('QT_QPA_PLATFORM', 'Process')
+$buildSucceeded = $false
 Push-Location -LiteralPath $root
 try {
     Invoke-Checked $python @('-c', "import struct, sys; import PyQt6, cryptography, PyInstaller; sys.exit(0 if sys.platform == 'win32' and struct.calcsize('P') == 8 else '64-bit Windows Python is required')")
@@ -112,9 +118,24 @@ try {
     }
     # Written last: contains only the three artifacts produced by this build.
     [IO.File]::WriteAllLines($manifest, [string[]] $sums, [Text.Encoding]::ASCII)
+    # Keep only the current installer in the checked-in download folder.
+    Get-ChildItem -LiteralPath $release -Filter 'EricaSecureTextEditorSetup_*.exe' -File |
+        Where-Object { $_.Name -ne $installerName } |
+        Remove-Item -Force
+    $buildSucceeded = $true
     Write-Host "Release $version ready in $release (SHA256SUMS.txt generated)."
 }
 finally {
     [Environment]::SetEnvironmentVariable('QT_QPA_PLATFORM', $oldQtPlatform, 'Process')
     Pop-Location
+    # release/ is the canonical download location. Do not accumulate duplicate
+    # executables or GUID-named PyInstaller staging directories after success.
+    if ($buildSucceeded) {
+        Remove-Item -LiteralPath $stage -Recurse -Force
+        Remove-Item -LiteralPath $portable -Force
+        $dist = Join-Path $root 'dist'
+        if (-not (Get-ChildItem -LiteralPath $dist -Force | Select-Object -First 1)) {
+            Remove-Item -LiteralPath $dist -Force
+        }
+    }
 }

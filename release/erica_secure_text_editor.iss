@@ -1,5 +1,5 @@
 #define MyAppName "Erica Secure Text Editor"
-#define MyAppVersion "3.4"
+#define MyAppVersion "3.5"
 #define MyAppExeName "EricaSecureTextEditor.exe"
 #define MyAppPublisher "Min Thuta Saw Naing (Eric)"
 #define MyAppURL "https://github.com/MinThutaSawNaing/EricaSecureTextEditor"

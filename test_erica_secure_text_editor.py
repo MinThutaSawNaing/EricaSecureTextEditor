@@ -241,8 +241,40 @@ class EricaAppTests(unittest.TestCase):
         self.window.split_current_table_cell()
         self.assertEqual((table.cellAt(0, 0).rowSpan(), table.cellAt(0, 0).columnSpan()), (1, 1))
 
+    def test_close_tab_rebinds_toolbars_to_surviving_document(self):
+        first = self.window.current_editor
+        self.window.add_new_tab(content="Surviving document")
+        second = self.window.current_editor
+        self.window.tabs.setCurrentIndex(0)
+        self.window.close_tab(0)
+        self.assertIs(self.window.current_editor, second)
+        self.assertIs(self.window.font_toolbar.editor, second)
+        self.assertIs(self.window.table_toolbar.editor, second)
+        second.selectAll()
+        self.window.apply_bold()
+        self.assertEqual(second.currentCharFormat().fontWeight(), appmod.QFont.Weight.Bold)
+        self.assertFalse(first.document().isModified())
+        second.document().setModified(False)
+
+    def test_column_management_keeps_fresh_equal_widths_and_single_undo(self):
+        toolbar = self.window.table_toolbar
+        table = toolbar.insert_table(2, 2)
+        before = self.window.current_editor.toHtml()
+        self.window.insert_table_column_right()
+        constraints = table.format().columnWidthConstraints()
+        self.assertEqual(len(constraints), 3)
+        self.assertTrue(all(abs(width.rawValue() - 100 / 3) < .001 for width in constraints))
+        self.window.current_editor.undo()
+        self.assertEqual(before, self.window.current_editor.toHtml())
+
     def insert_table_through_menu(self, rows=2, columns=2):
-        with patch.object(appmod.QInputDialog, "getInt", side_effect=[(rows, True), (columns, True)]):
+        def accept_dimensions(dialog):
+            from PyQt6.QtWidgets import QSpinBox
+            dialog.findChild(QSpinBox, "rows").setValue(rows)
+            dialog.findChild(QSpinBox, "columns").setValue(columns)
+            return appmod.QDialog.DialogCode.Accepted
+
+        with patch.object(appmod.QDialog, "exec", accept_dimensions):
             action = next(action for action in self.window.findChildren(appmod.QAction)
                           if action.text() == "Insert Table")
             action.trigger()
@@ -266,11 +298,10 @@ class EricaAppTests(unittest.TestCase):
         self.assertEqual(len(editor.document().rootFrame().childFrames()), 1)
 
     def test_menu_insert_cancel_does_not_change_document(self):
-        for answers in [[(2, False)], [(2, True), (2, False)]]:
-            with self.subTest(answers=answers), patch.object(appmod.QInputDialog, "getInt", side_effect=answers):
-                self.window.insert_table()
-            self.assertFalse(self.window.current_editor.document().isModified())
-            self.assertEqual(len(self.window.current_editor.document().rootFrame().childFrames()), 0)
+        with patch.object(appmod.QDialog, "exec", return_value=appmod.QDialog.DialogCode.Rejected):
+            self.window.table_toolbar.insert_table_dialog()
+        self.assertFalse(self.window.current_editor.document().isModified())
+        self.assertEqual(len(self.window.current_editor.document().rootFrame().childFrames()), 0)
 
     def test_insert_then_edit_rows_and_columns(self):
         table = self.insert_table_through_menu()

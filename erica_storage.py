@@ -1,7 +1,8 @@
 """Small, typed interface to the required Windows Rust storage library.
 
-Only completed byte payloads cross this seam. Encryption/password handling stays
-with cryptography. No Python write fallback silently bypasses native guarantees.
+Storage payloads and UTF-16 word-count buffers cross this seam. Encryption and
+password handling stay with cryptography. No Python write fallback silently
+bypasses native guarantees.
 """
 
 import ctypes
@@ -33,12 +34,31 @@ def _native():
         library.erica_atomic_write.restype = ctypes.c_uint32
         if library.erica_storage_abi_version() != 1:
             raise OSError("Incompatible Rust storage module; rebuild with build_native.ps1.")
+        try:
+            counter = library.erica_count_words_utf16
+        except AttributeError as exc:
+            raise OSError("Rust storage module lacks word counting; rebuild with build_native.ps1.") from exc
+        counter.argtypes = [ctypes.POINTER(ctypes.c_uint16), ctypes.c_size_t]
+        counter.restype = ctypes.c_size_t
         _library = library
     return _library
 
 
 def backend_version():
     return _native().erica_storage_abi_version()
+
+
+def count_words(text):
+    """Return len(text.split()) using native UTF-16 scanning without word lists.
+
+    Accepts str, including embedded NUL and lone surrogates. A copied buffer
+    remains live throughout the call; no CPython string-layout assumptions.
+    """
+    if not isinstance(text, str):
+        raise TypeError("Word-count text must be str.")
+    encoded = text.encode("utf-16-le", errors="surrogatepass")
+    units = (ctypes.c_uint16 * (len(encoded) // 2)).from_buffer_copy(encoded)
+    return _native().erica_count_words_utf16(units, len(units))
 
 
 def _require_bytes(data):

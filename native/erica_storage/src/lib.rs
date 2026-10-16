@@ -15,9 +15,113 @@ pub extern "C" fn erica_storage_abi_version() -> u32 {
     catch_unwind(|| 1).unwrap_or(1)
 }
 
+// Python str.isspace()/str.split() includes U+001C..U+001F in addition to
+// Unicode White_Space. All separators are BMP, so decoding surrogate pairs is
+// unnecessary: paired and unpaired surrogates are always non-whitespace.
+fn python_whitespace(unit: u16) -> bool {
+    matches!(unit, 0x0009..=0x000d | 0x001c..=0x0020 | 0x0085 | 0x00a0 |
+        0x1680 | 0x2000..=0x200a | 0x2028..=0x2029 | 0x202f | 0x205f | 0x3000)
+}
+
+/// Count nonempty whitespace-delimited words, like Python `len(text.split())`.
+/// Length is in UTF-16 code units; embedded NUL and unpaired surrogates are text.
+/// Returns zero for empty input, invalid arguments, or a caught Rust panic.
+///
+/// # Safety
+/// For nonempty input, `text` must point to an aligned, readable allocation of
+/// `len` u16 units, live and unmodified for this call. Null, misalignment and
+/// excessive lengths are rejected; arbitrary invalid pointers cannot be detected.
+#[no_mangle]
+pub unsafe extern "C" fn erica_count_words_utf16(text: *const u16, len: usize) -> usize {
+    catch_unwind(|| {
+        if len == 0
+            || text.is_null()
+            || len > isize::MAX as usize / 2
+            || !(text as usize).is_multiple_of(std::mem::align_of::<u16>())
+        {
+            return 0;
+        }
+        // SAFETY: caller guarantees readable storage; bounds/alignment checked above.
+        let units = unsafe { std::slice::from_raw_parts(text, len) };
+        let mut count = 0;
+        let mut in_word = false;
+        for &unit in units {
+            let nonspace = !python_whitespace(unit);
+            count += usize::from(nonspace && !in_word);
+            in_word = nonspace;
+        }
+        count
+    })
+    .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn word_count_whitespace_exhaustive_bmp() {
+        let whitespace: Vec<u16> = (0..=u16::MAX)
+            .filter(|&unit| {
+                char::from_u32(u32::from(unit)).is_some_and(char::is_whitespace)
+                    || (0x1c..=0x1f).contains(&unit)
+            })
+            .collect();
+        assert_eq!(whitespace.len(), 29);
+        for unit in 0..=u16::MAX {
+            let text = [b'a' as u16, unit, b'b' as u16];
+            // SAFETY: text is a live aligned array of three units.
+            assert_eq!(
+                unsafe { erica_count_words_utf16(text.as_ptr(), text.len()) },
+                if whitespace.contains(&unit) { 2 } else { 1 },
+                "U+{unit:04X}"
+            );
+        }
+    }
+
+    #[test]
+    fn word_count_unicode_and_boundaries() {
+        for (text, expected) in [
+            ("", 0),
+            (" \t\r\n", 0),
+            ("one", 1),
+            ("  one  two\nthree ", 3),
+            ("မြန်မာ 日本語 😀\u{a0}🔒", 4),
+            ("a\0b\u{200b}c\u{feff}d", 1),
+        ] {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            // SAFETY: units is live and aligned, including the empty case.
+            assert_eq!(
+                unsafe { erica_count_words_utf16(units.as_ptr(), units.len()) },
+                expected
+            );
+        }
+        let units = [0xd800, 0x20, 0xdc00, 0xd800, 0xdc00, 0x1c, 0xdfff];
+        // SAFETY: units is live and aligned; ill-formed UTF-16 is accepted.
+        assert_eq!(
+            unsafe { erica_count_words_utf16(units.as_ptr(), units.len()) },
+            3
+        );
+    }
+
+    #[test]
+    fn word_count_invalid_arguments() {
+        let units = [0u16];
+        // SAFETY: all invalid pointers/lengths are rejected before dereferencing.
+        unsafe {
+            assert_eq!(erica_count_words_utf16(std::ptr::null(), 0), 0);
+            assert_eq!(erica_count_words_utf16(std::ptr::null(), 1), 0);
+            assert_eq!(erica_count_words_utf16(units.as_ptr(), usize::MAX), 0);
+            assert_eq!(
+                erica_count_words_utf16(units.as_ptr(), isize::MAX as usize / 2 + 1),
+                0
+            );
+            assert_eq!(
+                erica_count_words_utf16(units.as_ptr().cast::<u8>().add(1).cast(), 1),
+                0
+            );
+        }
+    }
 
     #[test]
     fn legacy_layout_lengths_and_abi() {

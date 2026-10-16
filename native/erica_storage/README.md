@@ -9,6 +9,7 @@ or Python integration is implemented here. `rlib` output supports Rust tests.
 #include <stddef.h>
 #include <stdint.h>
 uint32_t erica_storage_abi_version(void); /* 1 */
+size_t erica_count_words_utf16(const uint16_t *text, size_t len);
 int32_t erica_validate_encrypted(const uint8_t *data, size_t len);
 uint32_t erica_atomic_write(const uint16_t *path, size_t path_len,
                            const uint8_t *data, size_t data_len,
@@ -36,6 +37,32 @@ parameter, 5 access denied, 3 path not found, 32 sharing violation. Unwinding
 Rust panics map to 1359 (internal error), RNG failure to 31 (general failure),
 and exhausted random-name retries to 80. No NTSTATUS is exposed. Non-Windows
 builds support validation but return 50 for otherwise well-formed writes.
+
+## UTF-16 word counting (additive ABI 1 export)
+
+`erica_count_words_utf16` returns `size_t` (`ctypes.c_size_t`), matching Python
+`len(text.split())`: count runs of non-whitespace without allocating word lists.
+It scans once in O(len) time and O(1) native memory, suitable for changed Qt text
+blocks. Length is UTF-16 **code units**, excluding any terminator. Embedded NUL
+is ordinary non-whitespace. All Python whitespace is recognized: U+0009–000D,
+U+001C–0020 (including the four Python-specific control separators), U+0085,
+U+00A0 (NBSP), U+1680, U+2000–200A, U+2028–2029, U+202F, U+205F, U+3000.
+Zero-width space, BOM, and U+180E are not separators. All separators are BMP;
+surrogate pairs and lone surrogates are non-whitespace and need no decoding.
+
+Zero length returns zero without accessing the pointer (null allowed). Null
+nonempty pointers, misaligned pointers, lengths above `ISIZE_MAX / 2`, and caught
+unwinding panics return zero as well; there is no separate error status. Otherwise
+the caller must provide aligned, readable storage, live and unmodified for the
+call. Pointer validity cannot be verified; access violations are not caught.
+The export is additive: existing exports and ABI version **1** are unchanged.
+
+Python `erica_storage.count_words(text)` accepts only `str`, encodes UTF-16LE
+with `surrogatepass`, and copies into a live `ctypes.c_uint16` array. The binding
+uses no private CPython string representation and preserves NUL/lone surrogates.
+The copy/encoding costs O(len) memory; native scanning allocates nothing. Rebuild
+older ABI-1 DLLs to provide this new symbol before using the updated binding.
+No main-app or Qt integration is performed here.
 
 ## Filesystem scope and failure behavior
 
@@ -87,10 +114,18 @@ builds support validation but return 50 for otherwise well-formed writes.
 From repository root on Windows with the Rust MSVC toolchain and Windows SDK:
 
 ```text
+cargo fmt --manifest-path native/erica_storage/Cargo.toml -- --check
 cargo test --offline --locked --manifest-path native/erica_storage/Cargo.toml
 cargo clippy --offline --locked --manifest-path native/erica_storage/Cargo.toml --all-targets -- -D warnings
 cargo build --offline --locked --release --manifest-path native/erica_storage/Cargo.toml
 ```
+
+Or run `./build_native.ps1` from the repository root to test, lint and build the
+release DLL and copy it beside `erica_storage.py`. Then run
+`python -m unittest test_native_wordcount test_erica_storage`. Word-count tests
+cover every BMP unit in Rust, all Unicode code points against Python `str.split`,
+all 29 whitespace characters, NUL, surrogate pairs/lone surrogates, randomized
+mixed text, large blocks, and invalid FFI arguments.
 
 The release artifact is `erica_storage.dll` in Cargo's release target directory
 (which may be overridden by repository/environment Cargo configuration). Tests

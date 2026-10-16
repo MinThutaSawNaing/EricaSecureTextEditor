@@ -1,6 +1,12 @@
-# Erica Secure Text Editor v3.4 - Table editing and installer improvements
+# Erica Secure Text Editor v3.5 - Context-menu editing and responsiveness
 import sys, os, json, secrets, re, hmac, ctypes, base64, subprocess
+import hashlib
+import threading
 from erica_storage import atomic_write, validate_encrypted
+from erica_wordcount import DocumentWordCounter
+from erica_tasks import run_background_task
+from erica_formatting import FontToolbar
+from erica_tables import TableToolbar
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QInputDialog,
     QMessageBox, QLineEdit, QStatusBar, QLabel, QDialog, QColorDialog,
@@ -8,7 +14,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QIcon, QAction, QTextCharFormat, QTextCursor, QTextListFormat, QTextBlockFormat, QBrush, QColor, QDesktopServices
 from PyQt6.QtGui import QTextDocumentFragment, QTextTableFormat, QTextFrameFormat, QTextTableCellFormat, QTextLength
-from PyQt6.QtCore import Qt, QTimer, QUrl, QMimeData
+from PyQt6.QtCore import Qt, QTimer, QUrl, QMimeData, QThread
 
 # Constants
 def ensure_windows_supported():
@@ -30,7 +36,7 @@ DEFAULT_TIMEOUT = 60 * 60  # 1 hour
 CLIPBOARD_CLEAR_TIME = 300 * 1000  # 5 minutes in milliseconds
 DEFAULT_FONT_SIZE = 12
 IMAGE_MAGIC = b"ERICAIMG1"
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
 DOCUMENT_EXTENSION = ".erica"
 LEGACY_DOCUMENT_EXTENSION = ".enc"
 OPEN_DOCUMENT_FILTER = "Erica Secure Files (*.erica *.enc);;Legacy Encrypted Files (*.enc)"
@@ -170,6 +176,7 @@ def harden_private_file(path):
             capture_output=True,
             check=False,
             text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except Exception:
         pass
@@ -273,6 +280,28 @@ def decrypt_bytes(data: bytes, password: str) -> bytes:
     padded = decryptor.update(encrypted) + decryptor.finalize()
     unpadder = crypto["padding"].PKCS7(128).unpadder()
     return unpadder.update(padded) + unpadder.finalize()
+
+def write_encrypted_document(path, html, password):
+    encrypted = encrypt_text(html, password)
+    atomic_write(path, encrypted, read_only=True, encrypted=True)
+
+
+def read_encrypted_document(path, password):
+    with open(path, 'rb') as handle:
+        return decrypt_text(handle.read(), password)
+
+
+def write_encrypted_image(image_path, encrypted_path, password):
+    with open(image_path, 'rb') as handle:
+        payload = pack_image_payload(handle.read(), os.path.splitext(image_path)[1])
+    encrypted = encrypt_bytes(payload, password)
+    atomic_write(encrypted_path, encrypted, read_only=True, encrypted=True)
+
+
+def read_encrypted_image(path, password):
+    with open(path, 'rb') as handle:
+        return unpack_image_payload(decrypt_bytes(handle.read(), password))
+
 
 def pack_image_payload(image_bytes: bytes, extension: str) -> bytes:
     ext_bytes = extension.encode("utf-8")
@@ -470,6 +499,39 @@ class ClickableTextBrowser(QTextBrowser):
 
 
 
+class RecoverySaveWorker(QThread):
+    """Own only immutable snapshot data; never access an editor or other widget."""
+
+    def __init__(self, snapshot, key, directory, path, commit_lock):
+        super().__init__()
+        self.snapshot = snapshot
+        self.key = key
+        self.directory = directory
+        self.path = path
+        self.commit_lock = commit_lock
+        self.cancelled = threading.Event()
+        self.succeeded = False
+
+    def run(self):
+        try:
+            encrypted = encrypt_bytes(self.snapshot, self.key)
+            # Clear invalidates even an encryption that is already in progress.
+            # Its removal shares this lock with commit, so it always wins.
+            with self.commit_lock:
+                if self.cancelled.is_set():
+                    return
+                os.makedirs(self.directory, exist_ok=True)
+                atomic_write(self.path, encrypted, encrypted=True)
+                harden_private_file(self.path)
+                self.succeeded = True
+        except Exception:
+            # Periodic recovery has always been best effort and silent.
+            pass
+        finally:
+            self.snapshot = None
+            self.key = None
+
+
 class MainWindow(QMainWindow):
     def __init__(self, initial_file=None):
         super().__init__()
@@ -491,7 +553,15 @@ class MainWindow(QMainWindow):
         self.timeout_seconds = DEFAULT_TIMEOUT
         self.remaining_time = self.timeout_seconds
         self.timeout_shutdown_in_progress = False
+        self._file_task_running = False
         self.is_restoring_recovery = False
+        self._recovery_worker = None
+        self._recovery_worker_digest = None
+        self._recovery_saved_digest = None
+        self._recovery_saved_signature = None
+        self._recovery_worker_signature = None
+        self._recovery_commit_lock = threading.Lock()
+        self._recovery_closing = False
         self.recent_files_menu = None
 
         # Setup timers
@@ -501,10 +571,16 @@ class MainWindow(QMainWindow):
         self.clipboard_clear_timer.setSingleShot(True)
         self.clipboard_clear_timer.timeout.connect(self.clear_clipboard)
         self.recovery_timer = QTimer()
-        self.recovery_timer.timeout.connect(self.autosave_recovery_snapshot)
+        self.recovery_timer.timeout.connect(self.queue_recovery_snapshot)
 
         self.init_menu()
         self.init_status()
+        # Keep the existing command helpers offscreen. Formatting is exposed
+        # through the editor context menu, not extra rows in the main window.
+        self.font_toolbar = FontToolbar(self)
+        self.table_toolbar = TableToolbar(self)
+        self.font_toolbar.hide()
+        self.table_toolbar.hide()
         self.set_theme(load_theme())
 
         # Show an empty editor first so the window can render quickly even on low-RAM devices.
@@ -548,72 +624,16 @@ class MainWindow(QMainWindow):
 
     # Text Formatting Methods
     def apply_bold(self):
-        editor = self.current_editor
-        if not editor:
-            return
-        try:
-            cursor = editor.textCursor()
-            fmt = cursor.charFormat()
-            is_bold = fmt.fontWeight() == QFont.Weight.Bold
-            fmt.setFontWeight(QFont.Weight.Bold if not is_bold else QFont.Weight.Normal)
-            cursor.mergeCharFormat(fmt)
-            editor.setTextCursor(cursor)
-            # print("Bold applied successfully.") # Optional: for debugging
-        except Exception as e:
-            QMessageBox.critical(self, "Formatting Error", f"Failed to apply bold: {e}")
-            import traceback
-            traceback.print_exc()
+        self.font_toolbar.toggle_bold()
 
     def apply_italic(self):
-        editor = self.current_editor
-        if not editor:
-            return
-        try:
-            cursor = editor.textCursor()
-            fmt = cursor.charFormat()
-            fmt.setFontItalic(not fmt.fontItalic())
-            cursor.mergeCharFormat(fmt)
-            editor.setTextCursor(cursor)
-            # print("Italic applied successfully.") # Optional: for debugging
-        except Exception as e:
-            QMessageBox.critical(self, "Formatting Error", f"Failed to apply italic: {e}")
-            import traceback
-            traceback.print_exc()
+        self.font_toolbar.toggle_italic()
 
     def increase_font_size(self):
-        editor = self.current_editor
-        if not editor:
-            return
-        try:
-            cursor = editor.textCursor()
-            fmt = cursor.charFormat()
-            current_size = fmt.fontPointSize()
-            fmt.setFontPointSize(current_size + 1 if current_size > 0 else DEFAULT_FONT_SIZE + 1)
-            cursor.mergeCharFormat(fmt)
-            editor.setTextCursor(cursor)
-            # print("Font size increased successfully.") # Optional: for debugging
-        except Exception as e:
-            QMessageBox.critical(self, "Formatting Error", f"Failed to increase font size: {e}")
-            import traceback
-            traceback.print_exc()
+        self.font_toolbar.increase_font_size()
 
     def decrease_font_size(self):
-        editor = self.current_editor
-        if not editor:
-            return
-        try:
-            cursor = editor.textCursor()
-            fmt = cursor.charFormat()
-            current_size = fmt.fontPointSize()
-            if current_size > 1:
-                fmt.setFontPointSize(current_size - 1)
-                cursor.mergeCharFormat(fmt)
-                editor.setTextCursor(cursor)
-                # print("Font size decreased successfully.") # Optional: for debugging
-        except Exception as e:
-            QMessageBox.critical(self, "Formatting Error", f"Failed to decrease font size: {e}")
-            import traceback
-            traceback.print_exc()
+        self.font_toolbar.decrease_font_size()
 
     def apply_bullet_list(self):
         editor = self.current_editor
@@ -743,14 +763,22 @@ class MainWindow(QMainWindow):
         table, cell = self.get_current_table()
         if table is None:
             return
+        cursor = self.current_editor.textCursor()
+        cursor.beginEditBlock()
         table.insertColumns(cell.column(), 1)
+        self._balance_table_columns(table)
+        cursor.endEditBlock()
         self.current_editor.document().setModified(True)
 
     def insert_table_column_right(self):
         table, cell = self.get_current_table()
         if table is None:
             return
+        cursor = self.current_editor.textCursor()
+        cursor.beginEditBlock()
         table.insertColumns(cell.column() + 1, 1)
+        self._balance_table_columns(table)
+        cursor.endEditBlock()
         self.current_editor.document().setModified(True)
 
     def delete_table_column(self):
@@ -761,9 +789,21 @@ class MainWindow(QMainWindow):
             self.delete_current_table()
             return
         column = cell.column()
+        cursor = self.current_editor.textCursor()
+        cursor.beginEditBlock()
         table.removeColumns(column, 1)
+        self._balance_table_columns(table)
+        cursor.endEditBlock()
         self.current_editor.setTextCursor(table.cellAt(0, min(column, table.columns() - 1)).firstCursorPosition())
         self.current_editor.document().setModified(True)
+
+    def _balance_table_columns(self, table):
+        table_format = table.format()
+        table_format.setColumnWidthConstraints([
+            QTextLength(QTextLength.Type.PercentageLength, 100 / table.columns())
+            for _ in range(table.columns())
+        ])
+        table.setFormat(table_format)
 
     def delete_current_table(self):
         selection_cursor = self.get_current_table_selection()
@@ -996,22 +1036,15 @@ class MainWindow(QMainWindow):
 
     # Core Editor Methods
     def on_tab_changed(self, index):
+        if hasattr(self, 'font_toolbar'):
+            self.font_toolbar.bind_editor(self.current_editor)
+            self.table_toolbar.bind_editor(self.current_editor)
         if index != -1 and index < len(self.open_documents):
             current_doc = self.open_documents[index]
             editor = current_doc['editor']
             
-            # Reconnect editor signals
-            try:
-                editor.cursorPositionChanged.disconnect()
-                editor.textChanged.disconnect()
-            except TypeError:
-                pass
-                
-            editor.cursorPositionChanged.connect(self.update_status)
-            editor.textChanged.connect(self.reset_idle_timer)
-            
+            # Connections are established once when the editor is created.
             self.update_status()
-            self.status.showMessage(f"Active: {os.path.basename(current_doc['path']) if current_doc['path'] else 'Untitled'}")
         else:
             self.status.showMessage("No active tab")
             self.update_status()
@@ -1028,11 +1061,17 @@ class MainWindow(QMainWindow):
         # Basic editor properties
         editor.setFont(QFont("Fira Code", DEFAULT_FONT_SIZE))
         editor.setAcceptRichText(True)
+        editor.word_counter = DocumentWordCounter(editor.document())
         
         # Connect essential signals for status updates and idle timer.
         # These connections are crucial for the editor's functionality within the main window.
         editor.cursorPositionChanged.connect(self.update_status)
         editor.textChanged.connect(self.reset_idle_timer)
+        editor.textChanged.connect(self.update_status)
+        editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        editor.customContextMenuRequested.connect(
+            lambda point, editor=editor: self.table_toolbar.show_context_menu(editor, point)
+        )
         
         return editor
 
@@ -1107,12 +1146,14 @@ class MainWindow(QMainWindow):
 
         # Remove tab
         self._disconnect_editor_signals(index)
-        self.tabs.removeTab(index)
         del self.open_documents[index]
+        # currentChanged is synchronous: update the parallel document list first.
+        self.tabs.removeTab(index)
         
         # Create new tab if none left
         if not self.tabs.count():
             self.add_new_tab()
+        self.on_tab_changed(self.tabs.currentIndex())
         self.update_session_metadata()
 
     def prompt_password(self, title, show_strength=False):
@@ -1177,31 +1218,113 @@ class MainWindow(QMainWindow):
             })
         return {"documents": documents}
 
-    def autosave_recovery_snapshot(self):
+    def _finish_recovery_job(self, wait=False):
+        worker = self._recovery_worker
+        if worker is None:
+            return True
+        if wait:
+            worker.wait()
+        elif worker.isRunning():
+            return False
+        if worker.succeeded and not worker.cancelled.is_set():
+            self._recovery_saved_digest = self._recovery_worker_digest
+            self._recovery_saved_signature = self._recovery_worker_signature
+        self._recovery_worker = None
+        self._recovery_worker_digest = None
+        self._recovery_worker_signature = None
+        return True
+
+    def _recovery_signature(self):
+        signature = []
+        for doc in self.open_documents:
+            editor = doc['editor']
+            document = editor.document()
+            if document.property("recoveryChangeEpoch") is None:
+                document.setProperty("recoveryChangeEpoch", 0)
+                # Unlike undo revisions this epoch cannot be reused by an edit
+                # made on a new undo branch. Only GUI-thread signals update it.
+                document.contentsChanged.connect(
+                    lambda document=document: document.setProperty(
+                        "recoveryChangeEpoch", document.property("recoveryChangeEpoch") + 1
+                    )
+                )
+            if document.isEmpty() and not doc.get('path'):
+                continue
+            if not document.isModified() and doc.get('path'):
+                continue
+            signature.append((editor, document, doc.get('path'), document.revision(),
+                              document.isModified(), document.property("recoveryChangeEpoch")))
+        return tuple(signature)
+
+    def _recovery_snapshot_data(self):
         if self.is_restoring_recovery or not self.open_documents:
             return
-
+        signature = self._recovery_signature()
+        if signature == self._recovery_saved_signature and os.path.exists(RECOVERY_FILE):
+            return
         payload = self.build_recovery_payload()
         if not payload["documents"]:
             return
+        snapshot = json.dumps(payload).encode("utf-8")
+        digest = hashlib.sha256(snapshot).digest()
+        if digest == self._recovery_saved_digest and os.path.exists(RECOVERY_FILE):
+            self._recovery_saved_signature = signature
+            return
+        return snapshot, digest, signature
 
+    def queue_recovery_snapshot(self):
+        """Timer seam: capture widgets here, encrypt and commit on a Qt worker."""
+        if self._recovery_closing or not self._finish_recovery_job():
+            return
         try:
-            encrypted = encrypt_bytes(
-                json.dumps(payload).encode("utf-8"),
-                get_recovery_key()
+            data = self._recovery_snapshot_data()
+            if data is None:
+                return
+            snapshot, digest, signature = data
+            worker = RecoverySaveWorker(
+                snapshot, get_recovery_key(), CONFIG_PATH, RECOVERY_FILE,
+                self._recovery_commit_lock
             )
-            os.makedirs(CONFIG_PATH, exist_ok=True)
-            atomic_write(RECOVERY_FILE, encrypted, encrypted=True)
-            harden_private_file(RECOVERY_FILE)
+            self._recovery_worker = worker
+            self._recovery_worker_digest = digest
+            self._recovery_worker_signature = signature
+            worker.start()
+        except Exception:
+            self._recovery_worker = None
+            self._recovery_worker_digest = None
+            self._recovery_worker_signature = None
+            pass
+
+    def autosave_recovery_snapshot(self):
+        """Explicit callers and close retain the immediate, synchronous API."""
+        self._finish_recovery_job(wait=True)
+        try:
+            data = self._recovery_snapshot_data()
+            if data is None:
+                return
+            snapshot, digest, signature = data
+            worker = RecoverySaveWorker(
+                snapshot, get_recovery_key(), CONFIG_PATH, RECOVERY_FILE,
+                self._recovery_commit_lock
+            )
+            worker.run()
+            if worker.succeeded:
+                self._recovery_saved_digest = digest
+                self._recovery_saved_signature = signature
         except Exception:
             pass
 
     def clear_recovery_snapshot(self):
-        if os.path.exists(RECOVERY_FILE):
-            try:
-                os.remove(RECOVERY_FILE)
-            except OSError:
-                pass
+        if self._recovery_worker is not None:
+            self._recovery_worker.cancelled.set()
+        self._recovery_saved_digest = None
+        self._recovery_saved_signature = None
+        with self._recovery_commit_lock:
+            if os.path.exists(RECOVERY_FILE):
+                try:
+                    os.remove(RECOVERY_FILE)
+                except OSError:
+                    pass
 
     def try_restore_recovery_snapshot(self):
         if not os.path.exists(RECOVERY_FILE):
@@ -1242,12 +1365,29 @@ class MainWindow(QMainWindow):
         self.status.showMessage("Recovered unsaved workspace.")
 
     def closeEvent(self, event):
+        if self._file_task_running:
+            event.ignore()
+            return
+        self._recovery_closing = True
+        self.recovery_timer.stop()
+        self._finish_recovery_job(wait=True)
         if self.build_recovery_payload()["documents"]:
             self.autosave_recovery_snapshot()
         else:
             self.clear_recovery_snapshot()
         self.update_session_metadata()
         event.accept()
+
+    def _run_file_task(self, task):
+        if self._file_task_running:
+            raise RuntimeError("A file operation is already in progress.")
+        self._file_task_running = True
+        self.timeout_timer.stop()
+        try:
+            return run_background_task(self, task)
+        finally:
+            self._file_task_running = False
+            self.reset_idle_timer()
 
     def silent_save(self, index):
         editor = self.open_documents[index]['editor']
@@ -1271,8 +1411,9 @@ class MainWindow(QMainWindow):
             return False
             
         try:
-            encrypted = encrypt_text(editor.toHtml(), password)
-            atomic_write(file_path, encrypted, read_only=True, encrypted=True)
+            html = editor.toHtml()
+            self._run_file_task(lambda: write_encrypted_document(file_path, html, password))
+            password = None
             editor.document().setModified(False)
             self.open_documents[index]['path'] = file_path
             self.tabs.setTabText(index, os.path.basename(file_path))
@@ -1281,8 +1422,11 @@ class MainWindow(QMainWindow):
             self.update_session_metadata()
             return True
         except Exception as e:
+            password = None
             QMessageBox.critical(self, "Error", f"Save failed: {e}")
             return False
+        finally:
+            password = None
 
     def _disconnect_editor_signals(self, index):
         editor = self.open_documents[index]['editor']
@@ -1317,16 +1461,15 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            with open(image_path, 'rb') as image_file:
-                image_bytes = image_file.read()
-
-            payload = pack_image_payload(image_bytes, os.path.splitext(image_path)[1])
-            encrypted = encrypt_bytes(payload, password)
-            atomic_write(encrypted_path, encrypted, read_only=True, encrypted=True)
+            self._run_file_task(lambda: write_encrypted_image(image_path, encrypted_path, password))
+            password = None
             self.status.showMessage(f"Encrypted image: {os.path.basename(encrypted_path)}")
             QMessageBox.information(self, "Image Encrypted", "Image encrypted successfully.")
         except Exception as e:
+            password = None
             QMessageBox.critical(self, "Error", f"Image encryption failed: {e}")
+        finally:
+            password = None
 
     def decrypt_image_file(self):
         encrypted_path, _ = QFileDialog.getOpenFileName(
@@ -1343,11 +1486,9 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            with open(encrypted_path, 'rb') as encrypted_file:
-                encrypted_data = encrypted_file.read()
-
-            payload = decrypt_bytes(encrypted_data, password)
-            original_extension, image_bytes = unpack_image_payload(payload)
+            original_extension, image_bytes = self._run_file_task(
+                lambda: read_encrypted_image(encrypted_path, password))
+            password = None
             default_name = os.path.splitext(os.path.basename(encrypted_path))[0] + original_extension
             output_path, _ = QFileDialog.getSaveFileName(
                 self,
@@ -1358,14 +1499,18 @@ class MainWindow(QMainWindow):
             if not output_path:
                 return
 
-            atomic_write(output_path, image_bytes)
+            self._run_file_task(lambda: atomic_write(output_path, image_bytes))
 
             self.status.showMessage(f"Decrypted image: {os.path.basename(output_path)}")
             QMessageBox.information(self, "Image Decrypted", "Image decrypted successfully.")
         except IntegrityError:
+            password = None
             QMessageBox.critical(self, "Integrity Error", "Encrypted image is tampered with or corrupted.")
         except Exception as e:
+            password = None
             QMessageBox.critical(self, "Error", f"Image decryption failed: {e}")
+        finally:
+            password = None
 
     # File Operations
     def open_file(self, path=None):
@@ -1395,10 +1540,8 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            with open(path, 'rb') as f:
-                data = f.read()
-                
-            text = decrypt_text(data, password)
+            text = self._run_file_task(lambda: read_encrypted_document(path, password))
+            password = None
             
             # Use current tab if empty, otherwise new tab
             if (self.current_editor and not self.current_file_path 
@@ -1415,10 +1558,14 @@ class MainWindow(QMainWindow):
             self.update_session_metadata()
                 
         except IntegrityError:
+            password = None
             QMessageBox.critical(self, "Integrity Error", 
                 "File appears tampered with or corrupted.")
         except Exception as e:
+            password = None
             QMessageBox.critical(self, "Error", f"Decryption failed: {e}")
+        finally:
+            password = None
 
     def save_file(self):
         if not self.current_editor:
@@ -1436,8 +1583,10 @@ class MainWindow(QMainWindow):
                 if not password:
                     return
                     
-                encrypted = encrypt_text(self.current_editor.toHtml(), password)
-                atomic_write(self.current_file_path, encrypted, read_only=True, encrypted=True)
+                html = self.current_editor.toHtml()
+                path = self.current_file_path
+                self._run_file_task(lambda: write_encrypted_document(path, html, password))
+                password = None
                 self.current_editor.document().setModified(False)
                 save_recent_file(self.current_file_path)
                 self.refresh_recent_files_menu()
@@ -1456,7 +1605,10 @@ class MainWindow(QMainWindow):
                     self.secure_clear_editor()
                     
             except Exception as e:
+                password = None
                 QMessageBox.critical(self, "Error", f"Save failed: {e}")
+            finally:
+                password = None
         else:
             self.save_as_file()
 
@@ -1480,8 +1632,9 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            encrypted = encrypt_text(self.current_editor.toHtml(), password)
-            atomic_write(path, encrypted, read_only=True, encrypted=True)
+            html = self.current_editor.toHtml()
+            self._run_file_task(lambda: write_encrypted_document(path, html, password))
+            password = None
             self.set_current_file_path(path)
             self.current_editor.document().setModified(False)
             save_recent_file(path)
@@ -1501,7 +1654,10 @@ class MainWindow(QMainWindow):
                 self.secure_clear_editor()
                 
         except Exception as e:
+            password = None
             QMessageBox.critical(self, "Error", f"Save As failed: {e}")
+        finally:
+            password = None
 
     def new_file(self):
         self.add_new_tab()
@@ -1562,7 +1718,7 @@ class MainWindow(QMainWindow):
         cursor = self.current_editor.textCursor()
         line = cursor.blockNumber() + 1
         col = cursor.positionInBlock() + 1
-        words = len(self.current_editor.toPlainText().split())
+        words = self.current_editor.word_counter.total
         self.status.showMessage(f"Ln {line}, Col {col} | Words: {words}")
 
     # Timer Functions
@@ -1757,7 +1913,24 @@ class MainWindow(QMainWindow):
             }
         """
         
-        self.setStyleSheet(dark_theme if mode == 'dark' else light_theme)
+        toolbar_background, toolbar_text, toolbar_border, toolbar_hover = (
+            ('#2d2d30', '#eeeeee', '#555555', '#45454a') if mode == 'dark'
+            else ('#f5f6f8', '#202124', '#c8ccd0', '#dce8f5')
+        )
+        toolbar_style = """
+            QToolBar { background: %s; color: %s; border: 0;
+                       border-bottom: 1px solid %s; spacing: 4px; padding: 4px; }
+            QToolBar QToolButton { color: %s; padding: 5px; border-radius: 3px; }
+            QToolBar QToolButton:hover, QToolBar QToolButton:checked { background: %s; }
+            QToolBar QToolButton:disabled { color: #888888; }
+            QToolBar QLabel { color: %s; padding: 0 4px; }
+            QToolBar QComboBox, QToolBar QDoubleSpinBox { background: %s; color: %s;
+                       border: 1px solid %s; border-radius: 3px; padding: 3px; }
+            QToolBar QComboBox QAbstractItemView { background: %s; color: %s; }
+        """ % (toolbar_background, toolbar_text, toolbar_border, toolbar_text,
+               toolbar_hover, toolbar_text, toolbar_background, toolbar_text,
+               toolbar_border, toolbar_background, toolbar_text)
+        self.setStyleSheet((dark_theme if mode == 'dark' else light_theme) + toolbar_style)
 
     # File Permissions
     def make_file_writable(self):
@@ -1916,6 +2089,11 @@ class MainWindow(QMainWindow):
         italic_action.triggered.connect(self.apply_italic)
         font_menu.addAction(italic_action)
 
+        underline_action = QAction("Underline", self)
+        underline_action.setShortcut("Ctrl+U")
+        underline_action.triggered.connect(lambda: self.font_toolbar.toggle_underline())
+        font_menu.addAction(underline_action)
+
         font_menu.addSeparator()
 
         inc_size_action = QAction("Increase Size", self)
@@ -1947,7 +2125,7 @@ class MainWindow(QMainWindow):
         table_menu = format_menu.addMenu("Tables")
 
         table_action = QAction("Insert Table", self)
-        table_action.triggered.connect(self.insert_table)
+        table_action.triggered.connect(lambda: self.table_toolbar.insert_table_dialog())
         table_menu.addAction(table_action)
 
         delete_table_action = QAction("Delete Current Table", self)
