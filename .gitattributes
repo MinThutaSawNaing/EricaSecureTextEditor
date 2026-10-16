@@ -1,0 +1,3 @@
+# Preserve the exact installer source bytes covered by the release checksum.
+release/erica_secure_text_editor.iss -text
+release/SHA256SUMS.txt text eol=lf

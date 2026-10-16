@@ -1,4 +1,4 @@
-# Erica Secure Text Editor v3.3 - Windows file association support
+# Erica Secure Text Editor v3.4 - Table editing and installer improvements
 import sys, os, json, secrets, re, hmac, ctypes, base64, subprocess
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QInputDialog,
@@ -29,7 +29,7 @@ DEFAULT_TIMEOUT = 60 * 60  # 1 hour
 CLIPBOARD_CLEAR_TIME = 300 * 1000  # 5 minutes in milliseconds
 DEFAULT_FONT_SIZE = 12
 IMAGE_MAGIC = b"ERICAIMG1"
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 DOCUMENT_EXTENSION = ".erica"
 LEGACY_DOCUMENT_EXTENSION = ".enc"
 OPEN_DOCUMENT_FILTER = "Erica Secure Files (*.erica *.enc);;Legacy Encrypted Files (*.enc)"
@@ -439,6 +439,7 @@ class ClickableTextBrowser(QTextBrowser):
         self.setOpenLinks(False)  # Disable default Qt link opening (Ctrl+Click)
         self.setMouseTracking(True) # Enable mouse move events even when no button is pressed
         self.setReadOnly(False) # Ensure it's editable by default
+        self.setUndoRedoEnabled(True)
 
     def mouseReleaseEvent(self, event):
         # This method is called when a mouse button is released
@@ -670,9 +671,20 @@ class MainWindow(QMainWindow):
             table_format.setBorderStyle(QTextFrameFormat.BorderStyle.BorderStyle_Solid)
             table_format.setCellPadding(6)
             table_format.setCellSpacing(0)
+            table_format.setWidth(QTextLength(QTextLength.Type.PercentageLength, 100))
+            table_format.setColumnWidthConstraints([
+                QTextLength(QTextLength.Type.PercentageLength, 100 / columns)
+                for _ in range(columns)
+            ])
             table_format.setHeaderRowCount(1 if rows > 1 else 0)
-            cursor.insertTable(rows, columns, table_format)
+            cursor.beginEditBlock()
+            table = cursor.insertTable(rows, columns, table_format)
+            cursor.endEditBlock()
+            # textCursor() returns a copy; document insertion alone leaves the
+            # widget's cursor after the table rather than in an editable cell.
+            editor.setTextCursor(table.cellAt(0, 0).firstCursorPosition())
             editor.setFocus()
+            editor.ensureCursorVisible()
             editor.document().setModified(True)
         except Exception as e:
             QMessageBox.critical(self, "Formatting Error", f"Failed to insert table: {e}")
@@ -721,9 +733,11 @@ class MainWindow(QMainWindow):
         if table is None:
             return
         if table.rows() <= 1:
-            QMessageBox.information(self, "Table", "A table must keep at least one row.")
+            self.delete_current_table()
             return
-        table.removeRows(cell.row(), 1)
+        row = cell.row()
+        table.removeRows(row, 1)
+        self.current_editor.setTextCursor(table.cellAt(min(row, table.rows() - 1), 0).firstCursorPosition())
         self.current_editor.document().setModified(True)
 
     def insert_table_column_left(self):
@@ -745,9 +759,22 @@ class MainWindow(QMainWindow):
         if table is None:
             return
         if table.columns() <= 1:
-            QMessageBox.information(self, "Table", "A table must keep at least one column.")
+            self.delete_current_table()
             return
-        table.removeColumns(cell.column(), 1)
+        column = cell.column()
+        table.removeColumns(column, 1)
+        self.current_editor.setTextCursor(table.cellAt(0, min(column, table.columns() - 1)).firstCursorPosition())
+        self.current_editor.document().setModified(True)
+
+    def delete_current_table(self):
+        selection_cursor = self.get_current_table_selection()
+        if selection_cursor is None:
+            return
+        selection_cursor.beginEditBlock()
+        selection_cursor.removeSelectedText()
+        selection_cursor.endEditBlock()
+        self.current_editor.setTextCursor(selection_cursor)
+        self.current_editor.setFocus()
         self.current_editor.document().setModified(True)
 
     def copy_current_table(self):
@@ -1141,7 +1168,7 @@ class MainWindow(QMainWindow):
         documents = []
         for doc in self.open_documents:
             editor = doc['editor']
-            if not editor.toPlainText().strip() and not doc.get('path'):
+            if editor.document().isEmpty() and not doc.get('path'):
                 continue
             if not editor.document().isModified() and doc.get('path'):
                 continue
@@ -1952,6 +1979,10 @@ class MainWindow(QMainWindow):
         table_action = QAction("Insert Table", self)
         table_action.triggered.connect(self.insert_table)
         table_menu.addAction(table_action)
+
+        delete_table_action = QAction("Delete Current Table", self)
+        delete_table_action.triggered.connect(self.delete_current_table)
+        table_menu.addAction(delete_table_action)
 
         table_menu.addSeparator()
 

@@ -8,10 +8,20 @@ This project is a strong portfolio example of applied desktop engineering: secur
 
 Download the Windows builds directly from the committed [`release/`](./release/) folder:
 
-- Recommended installer: [`EricaSecureTextEditorSetup_3.3.exe`](./release/EricaSecureTextEditorSetup_3.3.exe)
-- Portable executable: [`EricaSecureTextEditor.exe`](./release/EricaSecureTextEditor.exe)
+- Recommended installer: [Download Erica 3.4 for Windows](./release/EricaSecureTextEditorSetup_3.4.exe?raw=true)
+- Portable executable: [Download without installation](./release/EricaSecureTextEditor.exe?raw=true)
+- Integrity checks: [`SHA256SUMS.txt`](./release/SHA256SUMS.txt)
 
-The installer is the recommended option because it adds Start Menu and desktop shortcuts and registers Erica for Windows `Open with` support for `.erica` secure documents.
+The installer is recommended: fresh installations default to the current user without administrator access, with an all-users option when needed. It adds a Start Menu shortcut, offers an optional desktop shortcut, and registers `.erica` Open With support without changing your default app. Existing installations retain their scope and directory when detected.
+
+### What's fixed in 3.4
+
+- Tables use the editor width and put the cursor in the first cell after insertion.
+- Row and column deletion keep the cursor in the table; deleting the last row or column removes the table.
+- **Format → Tables → Delete Current Table** removes a whole table without using the clipboard.
+- Undo/redo is enabled, and empty-table documents are included in recovery snapshots.
+
+These builds are not code-signed; a SHA-256 checksum checks file integrity but does not replace publisher authentication. Windows may show an unknown-publisher warning.
 
 ## Project Snapshot
 
@@ -116,6 +126,14 @@ python erica_secure_text_editor.py
 
 ## Build for Windows
 
+For the complete test, executable, installer, and checksum pipeline, run:
+
+```powershell
+& 'D:\Erica Text Editor\EricaSecureTextEditor\build_windows.ps1'
+```
+
+Requires 64-bit Windows Python with the dependencies and PyInstaller installed, plus Inno Setup 6. The script does not install dependencies or upload files. Override `-PythonExe` or `-IsccExe` if necessary.
+
 ### Create the executable
 
 ```bash
@@ -132,14 +150,14 @@ Use the included Inno Setup script after the executable has been built:
 iscc erica_secure_text_editor.iss
 ```
 
-The installer is written to `release/` as `EricaSecureTextEditorSetup_3.3.exe`.
+The installer is written to `release/` as `EricaSecureTextEditorSetup_3.4.exe`.
 
 ### Release folder
 
 The `release/` folder is intended to hold the Windows deliverables for sharing or publishing:
 
 - `EricaSecureTextEditor.exe`
-- `EricaSecureTextEditorSetup_3.3.exe`
+- `EricaSecureTextEditorSetup_3.4.exe`
 - `erica_secure_text_editor.iss`
 
 This keeps the checked-in distribution artifacts separate from the transient `dist/` and `build/` directories.

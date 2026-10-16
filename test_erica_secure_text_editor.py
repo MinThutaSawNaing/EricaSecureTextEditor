@@ -179,6 +179,85 @@ class EricaAppTests(unittest.TestCase):
         self.window.split_current_table_cell()
         self.assertEqual((table.cellAt(0, 0).rowSpan(), table.cellAt(0, 0).columnSpan()), (1, 1))
 
+    def insert_table_through_menu(self, rows=2, columns=2):
+        with patch.object(appmod.QInputDialog, "getInt", side_effect=[(rows, True), (columns, True)]):
+            action = next(action for action in self.window.findChildren(appmod.QAction)
+                          if action.text() == "Insert Table")
+            action.trigger()
+        table = self.window.current_editor.textCursor().currentTable()
+        self.assertIsNotNone(table, "Insert Table must leave the editor cursor inside the table")
+        return table
+
+    def test_menu_insert_table_visible_editable_and_undoable(self):
+        editor = self.window.current_editor
+        table = self.insert_table_through_menu()
+        self.assertEqual((table.rows(), table.columns()), (2, 2))
+        self.assertEqual(table.format().width().type(), appmod.QTextLength.Type.PercentageLength)
+        self.assertEqual(table.format().width().rawValue(), 100)
+        self.assertEqual(len(table.format().columnWidthConstraints()), 2)
+        editor.insertPlainText("First cell")
+        self.assertIn("First cell", table.cellAt(0, 0).firstCursorPosition().block().text())
+        editor.undo()
+        editor.undo()
+        self.assertEqual(len(editor.document().rootFrame().childFrames()), 0)
+        editor.redo()
+        self.assertEqual(len(editor.document().rootFrame().childFrames()), 1)
+
+    def test_menu_insert_cancel_does_not_change_document(self):
+        for answers in [[(2, False)], [(2, True), (2, False)]]:
+            with self.subTest(answers=answers), patch.object(appmod.QInputDialog, "getInt", side_effect=answers):
+                self.window.insert_table()
+            self.assertFalse(self.window.current_editor.document().isModified())
+            self.assertEqual(len(self.window.current_editor.document().rootFrame().childFrames()), 0)
+
+    def test_insert_then_edit_rows_and_columns(self):
+        table = self.insert_table_through_menu()
+        self.window.insert_table_row_below()
+        self.window.insert_table_column_right()
+        self.assertEqual((table.rows(), table.columns()), (3, 3))
+        self.window.delete_table_row()
+        self.window.delete_table_column()
+        self.assertEqual((table.rows(), table.columns()), (2, 2))
+
+    def test_delete_table_preserves_surrounding_text_and_undo(self):
+        editor = self.window.current_editor
+        editor.setPlainText("Before\nAfter")
+        cursor = editor.textCursor()
+        cursor.setPosition(len("Before\n"))
+        editor.setTextCursor(cursor)
+        self.insert_table_through_menu()
+        self.window.delete_current_table()
+        self.assertEqual(len(editor.document().rootFrame().childFrames()), 0)
+        self.assertIn("Before", editor.toPlainText())
+        self.assertIn("After", editor.toPlainText())
+        editor.undo()
+        self.assertEqual(len(editor.document().rootFrame().childFrames()), 1)
+
+    def test_deleting_last_row_or_column_removes_table(self):
+        for operation in [self.window.delete_table_row, self.window.delete_table_column]:
+            with self.subTest(operation=operation.__name__):
+                self.window.current_editor.clear()
+                self.insert_table_through_menu(1, 1)
+                operation()
+                self.assertEqual(len(self.window.current_editor.document().rootFrame().childFrames()), 0)
+
+    def test_empty_table_is_included_in_recovery(self):
+        self.insert_table_through_menu()
+        documents = self.window.build_recovery_payload()["documents"]
+        self.assertEqual(len(documents), 1)
+        self.assertIn("<table", documents[0]["html"])
+
+    def test_table_survives_encrypted_html_roundtrip(self):
+        self.insert_table_through_menu()
+        self.window.current_editor.insertPlainText("Protected cell")
+        html = self.window.current_editor.toHtml()
+        restored = appmod.decrypt_text(appmod.encrypt_text(html, "Passw0rd!"), "Passw0rd!")
+        self.window.add_new_tab(content=restored, content_is_html=True)
+        tables = self.window.current_editor.document().rootFrame().childFrames()
+        self.assertEqual(len(tables), 1)
+        self.assertEqual((tables[0].rows(), tables[0].columns()), (2, 2))
+        self.assertIn("Protected cell", self.window.current_editor.toPlainText())
+
 
 if __name__ == "__main__":
     unittest.main()
