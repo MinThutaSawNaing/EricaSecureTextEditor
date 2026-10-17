@@ -1,4 +1,4 @@
-# Erica Secure Text Editor v3.5 - Context-menu editing and responsiveness
+# Erica Secure Text Editor v3.6 - Rust-backed organization token security
 import sys, os, json, secrets, re, hmac, ctypes, base64, subprocess
 import hashlib
 import threading
@@ -7,12 +7,14 @@ from erica_wordcount import DocumentWordCounter
 from erica_tasks import run_background_task
 from erica_formatting import FontToolbar
 from erica_tables import TableToolbar
+import erica_organization as organization
+from erica_organization_ui import OrganizationTokenDialog
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QInputDialog,
     QMessageBox, QLineEdit, QStatusBar, QLabel, QDialog, QColorDialog,
     QVBoxLayout, QProgressBar, QPushButton, QTabWidget, QTextBrowser
 )
-from PyQt6.QtGui import QFont, QIcon, QAction, QTextCharFormat, QTextCursor, QTextListFormat, QTextBlockFormat, QBrush, QColor, QDesktopServices
+from PyQt6.QtGui import QFont, QIcon, QAction, QActionGroup, QTextCharFormat, QTextCursor, QTextListFormat, QTextBlockFormat, QBrush, QColor, QDesktopServices
 from PyQt6.QtGui import QTextDocumentFragment, QTextTableFormat, QTextFrameFormat, QTextTableCellFormat, QTextLength
 from PyQt6.QtCore import Qt, QTimer, QUrl, QMimeData, QThread
 
@@ -36,7 +38,7 @@ DEFAULT_TIMEOUT = 60 * 60  # 1 hour
 CLIPBOARD_CLEAR_TIME = 300 * 1000  # 5 minutes in milliseconds
 DEFAULT_FONT_SIZE = 12
 IMAGE_MAGIC = b"ERICAIMG1"
-APP_VERSION = "3.5"
+APP_VERSION = "3.6"
 DOCUMENT_EXTENSION = ".erica"
 LEGACY_DOCUMENT_EXTENSION = ".enc"
 OPEN_DOCUMENT_FILTER = "Erica Secure Files (*.erica *.enc);;Legacy Encrypted Files (*.enc)"
@@ -282,25 +284,57 @@ def decrypt_bytes(data: bytes, password: str) -> bytes:
     return unpadder.update(padded) + unpadder.finalize()
 
 def write_encrypted_document(path, html, password):
-    encrypted = encrypt_text(html, password)
-    atomic_write(path, encrypted, read_only=True, encrypted=True)
+    if isinstance(password, tuple):
+        organization.write_file(path, html.encode('utf-8'), password)
+    else:
+        verify_destination_mode(path, password)
+        encrypted = encrypt_text(html, password)
+        atomic_write(path, encrypted, read_only=True, encrypted=True)
 
 
 def read_encrypted_document(path, password):
+    if isinstance(password, tuple):
+        return organization.read_file(path, password).decode('utf-8')
     with open(path, 'rb') as handle:
-        return decrypt_text(handle.read(), password)
+        data = handle.read()
+    if organization.is_organization_data(data):
+        raise ValueError("This file requires the original organization token pair.")
+    return decrypt_text(data, password)
+
+
+def file_uses_organization(path):
+    return organization.file_uses_organization(path)
+
+
+def verify_destination_mode(path, credential):
+    """Never silently convert an existing file or replace another organization's file.
+
+    This protects ordinary UI use, not malicious concurrent filesystem replacement.
+    Save As to a new filename is the explicit way to convert a decrypted document.
+    """
+    organization.verify_destination(path, credential)
 
 
 def write_encrypted_image(image_path, encrypted_path, password):
+    if not isinstance(password, tuple):
+        verify_destination_mode(encrypted_path, password)
     with open(image_path, 'rb') as handle:
         payload = pack_image_payload(handle.read(), os.path.splitext(image_path)[1])
-    encrypted = encrypt_bytes(payload, password)
-    atomic_write(encrypted_path, encrypted, read_only=True, encrypted=True)
+    if isinstance(password, tuple):
+        organization.write_file(encrypted_path, payload, password)
+    else:
+        encrypted = encrypt_bytes(payload, password)
+        atomic_write(encrypted_path, encrypted, read_only=True, encrypted=True)
 
 
 def read_encrypted_image(path, password):
+    if isinstance(password, tuple):
+        return unpack_image_payload(organization.read_file(path, password))
     with open(path, 'rb') as handle:
-        return unpack_image_payload(decrypt_bytes(handle.read(), password))
+        data = handle.read()
+    if organization.is_organization_data(data):
+        raise ValueError("This image requires the original organization token pair.")
+    return unpack_image_payload(decrypt_bytes(data, password))
 
 
 def pack_image_payload(image_bytes: bytes, extension: str) -> bytes:
@@ -326,14 +360,57 @@ def load_config():
         return {}
     try:
         with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return {}
 
 def save_config(data):
+    # Never replace unreadable settings with defaults: they may hold the only
+    # protected organization tokens or recovery key available on this account.
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as handle:
+                existing = json.load(handle)
+            if not isinstance(existing, dict):
+                raise ValueError("Configuration root is not an object.")
+        except (OSError, ValueError, TypeError) as exc:
+            raise ValueError(
+                "Existing configuration is unreadable or damaged. It was not overwritten. "
+                "Restore a trusted backup before continuing."
+            ) from exc
     os.makedirs(CONFIG_PATH, exist_ok=True)
     atomic_write(CONFIG_FILE, json.dumps(data).encode("utf-8"))
     harden_private_file(CONFIG_FILE)
+
+
+def get_organization_tokens():
+    protected = load_config().get("organization_tokens_protected")
+    if not protected:
+        raise ValueError("Configure both organization tokens under Security > Configure Organization Tokens first.")
+    try:
+        return organization.unprotect_tokens(protected)
+    except Exception as exc:
+        raise ValueError(
+            "Saved organization tokens cannot be unlocked by this Windows account. "
+            "Reconfigure the original token pair; credentials were not replaced."
+        ) from exc
+
+
+def save_organization_tokens(tokens, checks):
+    organization.validate_check_values(tokens[0], checks[0], tokens[1], checks[1])
+    protected = organization.protect_tokens(tokens)
+    config = load_config()
+    config["organization_tokens_protected"] = protected
+    config["encryption_mode"] = "organization"
+    save_config(config)
+
+
+def remove_organization_tokens():
+    config = load_config()
+    config.pop("organization_tokens_protected", None)
+    config["encryption_mode"] = "password"
+    save_config(config)
 
 def load_theme():
     return load_config().get("theme", "dark")
@@ -563,6 +640,9 @@ class MainWindow(QMainWindow):
         self._recovery_commit_lock = threading.Lock()
         self._recovery_closing = False
         self.recent_files_menu = None
+        self.encryption_mode = load_config().get("encryption_mode", "password")
+        if self.encryption_mode not in {"password", "organization"}:
+            self.encryption_mode = "password"
 
         # Setup timers
         self.timeout_timer = QTimer()
@@ -1075,7 +1155,7 @@ class MainWindow(QMainWindow):
         
         return editor
 
-    def add_new_tab(self, file_path=None, content="", content_is_html=False):
+    def add_new_tab(self, file_path=None, content="", content_is_html=False, protection_mode=None):
         """
         Adds a new tab to the QTabWidget, creating a new editor instance
         using the _create_editor_instance helper.
@@ -1093,7 +1173,8 @@ class MainWindow(QMainWindow):
         
         # 2. Add the editor and its associated file path to our internal list
         #    of open documents. This list helps manage multiple tabs.
-        self.open_documents.append({'editor': editor, 'path': file_path, 'password': None})
+        self.open_documents.append({'editor': editor, 'path': file_path, 'password': None,
+                                    'protection_mode': protection_mode})
         
         # 3. Determine the title for the new tab. If a file_path is provided,
         #    use its base name; otherwise, default to "Untitled".
@@ -1167,6 +1248,88 @@ class MainWindow(QMainWindow):
             )
             return password if ok else None
 
+    def file_credential(self, title, path=None, show_strength=False, new_file=False, mode=None):
+        if path and not new_file and os.path.exists(path) and os.path.getsize(path):
+            destination_mode = "organization" if file_uses_organization(path) else "password"
+            if mode in {"password", "organization"} and mode != destination_mode:
+                raise ValueError("The file's protection mode changed on disk. Save As to a new filename instead.")
+            mode = destination_mode
+        else:
+            mode = mode or self.encryption_mode
+        if mode == "organization":
+            return get_organization_tokens()
+        return self.prompt_password(title, show_strength=show_strength)
+
+    def set_encryption_mode(self, mode):
+        try:
+            if mode == "organization":
+                get_organization_tokens()
+            config = load_config()
+            config["encryption_mode"] = mode
+            save_config(config)
+            self.encryption_mode = mode
+            self.status.showMessage(
+                "New files use Organization Token Mode." if mode == "organization"
+                else "New files use Password Mode."
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Encryption Mode", str(exc))
+        self._refresh_mode_actions()
+
+    def _refresh_mode_actions(self):
+        self.password_mode_action.setChecked(self.encryption_mode == "password")
+        self.organization_mode_action.setChecked(self.encryption_mode == "organization")
+        if hasattr(self, 'mode_label'):
+            self.mode_label.setText("New files: Organization" if self.encryption_mode == "organization"
+                                    else "New files: Password")
+
+    def configure_organization_tokens(self):
+        if load_config().get("organization_tokens_protected"):
+            reply = QMessageBox.question(
+                self, "Replace Organization Tokens?",
+                "Old files still require the original tokens. Back them up before replacing them. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        dialog = OrganizationTokenDialog(self)
+        tokens = None
+        try:
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            tokens = dialog.tokens
+            checks = tuple(field.text() for field in dialog.check_inputs)
+            save_organization_tokens(tokens, checks)
+            self.encryption_mode = "organization"
+            self._refresh_mode_actions()
+            self.status.showMessage("Organization tokens protected locally. New files use Organization Token Mode.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Organization Setup", str(exc))
+        finally:
+            tokens = None
+            dialog.clear_fields()
+            dialog.deleteLater()
+
+    def forget_organization_tokens(self):
+        reply = QMessageBox.question(
+            self, "Remove Local Organization Tokens?",
+            "This removes this PC's saved tokens, not access on other PCs or copies of files. "
+            "Open tabs and locally encrypted recovery snapshots are not erased. "
+            "Existing files still need the original tokens. Continue only if you have a secure backup.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            remove_organization_tokens()
+            self.encryption_mode = "password"
+            self._refresh_mode_actions()
+            self.status.showMessage("Local organization tokens removed; new files use Password Mode.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Organization Setup", str(exc))
+
     def get_session_file_paths(self):
         return [doc['path'] for doc in self.open_documents if doc.get('path')]
 
@@ -1215,6 +1378,7 @@ class MainWindow(QMainWindow):
             documents.append({
                 "path": doc.get('path'),
                 "html": editor.toHtml(),
+                "protection_mode": doc.get('protection_mode') or self.encryption_mode,
             })
         return {"documents": documents}
 
@@ -1252,7 +1416,7 @@ class MainWindow(QMainWindow):
                 continue
             if not document.isModified() and doc.get('path'):
                 continue
-            signature.append((editor, document, doc.get('path'), document.revision(),
+            signature.append((editor, document, doc.get('path'), doc.get('protection_mode') or self.encryption_mode, document.revision(),
                               document.isModified(), document.property("recoveryChangeEpoch")))
         return tuple(signature)
 
@@ -1359,9 +1523,12 @@ class MainWindow(QMainWindow):
         self.open_documents.clear()
 
         for doc in payload["documents"]:
-            self.add_new_tab(file_path=doc.get("path"), content=doc.get("html", ""), content_is_html=True)
+            self.add_new_tab(file_path=doc.get("path"), content=doc.get("html", ""), content_is_html=True,
+                             protection_mode=doc.get("protection_mode"))
+            self.current_editor.document().setModified(True)
         self.clear_recovery_snapshot()
         self.is_restoring_recovery = False
+        self.autosave_recovery_snapshot()
         self.status.showMessage("Recovered unsaved workspace.")
 
     def closeEvent(self, event):
@@ -1406,13 +1573,16 @@ class MainWindow(QMainWindow):
             
         # Never retain the password in per-document state, including tab-close saves.
         self.open_documents[index]['password'] = None
-        password = self.prompt_password("Encrypt File", show_strength=True)
-        if not password:
-            return False
-            
         try:
+            password = self.file_credential("Encrypt File", file_path, show_strength=True,
+                                            mode=self.open_documents[index].get('protection_mode'))
+            if not password:
+                return False
             html = editor.toHtml()
             self._run_file_task(lambda: write_encrypted_document(file_path, html, password))
+            self.open_documents[index]['protection_mode'] = (
+                'organization' if isinstance(password, tuple) else 'password'
+            )
             password = None
             editor.document().setModified(False)
             self.open_documents[index]['path'] = file_path
@@ -1456,15 +1626,15 @@ class MainWindow(QMainWindow):
         if not encrypted_path:
             return
 
-        password = self.prompt_password("Encrypt Image", show_strength=True)
-        if not password:
-            return
-
         try:
+            password = self.file_credential("Encrypt Image", show_strength=True, new_file=True)
+            if not password:
+                return
             self._run_file_task(lambda: write_encrypted_image(image_path, encrypted_path, password))
             password = None
             self.status.showMessage(f"Encrypted image: {os.path.basename(encrypted_path)}")
-            QMessageBox.information(self, "Image Encrypted", "Image encrypted successfully.")
+            QMessageBox.information(self, "Image Encrypted",
+                                    "Encrypted copy created successfully. The original plaintext image was not removed.")
         except Exception as e:
             password = None
             QMessageBox.critical(self, "Error", f"Image encryption failed: {e}")
@@ -1481,11 +1651,10 @@ class MainWindow(QMainWindow):
         if not encrypted_path:
             return
 
-        password = self.prompt_password("Decrypt Image")
-        if not password:
-            return
-
         try:
+            password = self.file_credential("Decrypt Image", encrypted_path)
+            if not password:
+                return
             original_extension, image_bytes = self._run_file_task(
                 lambda: read_encrypted_image(encrypted_path, password))
             password = None
@@ -1535,11 +1704,11 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-        password = self.prompt_password("Decrypt File")
-        if not password:
-            return
-
         try:
+            password = self.file_credential("Decrypt File", path)
+            if not password:
+                return
+            protection_mode = 'organization' if isinstance(password, tuple) else 'password'
             text = self._run_file_task(lambda: read_encrypted_document(path, password))
             password = None
             
@@ -1548,10 +1717,12 @@ class MainWindow(QMainWindow):
                     and not self.current_editor.toPlainText()):
                 self.current_editor.setHtml(text)
                 self.set_current_file_path(path)
+                self.open_documents[self.tabs.currentIndex()]['protection_mode'] = protection_mode
                 self.current_editor.document().setModified(False)
                 self.status.showMessage(f"Opened: {os.path.basename(path)}")
             else:
-                self.add_new_tab(file_path=path, content=text, content_is_html=True)
+                self.add_new_tab(file_path=path, content=text, content_is_html=True,
+                                 protection_mode=protection_mode)
                 self.status.showMessage(f"Opened: {os.path.basename(path)}")
             save_recent_file(path)
             self.refresh_recent_files_menu()
@@ -1574,11 +1745,11 @@ class MainWindow(QMainWindow):
 
         if self.current_file_path:
             try:
-                # Only file size is needed; do not read the entire old ciphertext.
-                if os.path.getsize(self.current_file_path) >= 80:
-                    password = self.prompt_password("Enter Password")
-                else:
-                    password = self.prompt_password("Set Password", show_strength=True)
+                password = self.file_credential(
+                    "Enter Password" if os.path.getsize(self.current_file_path) >= 80 else "Set Password",
+                    self.current_file_path, show_strength=os.path.getsize(self.current_file_path) < 80,
+                    mode=self.open_documents[self.tabs.currentIndex()].get('protection_mode'),
+                )
 
                 if not password:
                     return
@@ -1586,6 +1757,9 @@ class MainWindow(QMainWindow):
                 html = self.current_editor.toHtml()
                 path = self.current_file_path
                 self._run_file_task(lambda: write_encrypted_document(path, html, password))
+                self.open_documents[self.tabs.currentIndex()]['protection_mode'] = (
+                    'organization' if isinstance(password, tuple) else 'password'
+                )
                 password = None
                 self.current_editor.document().setModified(False)
                 save_recent_file(self.current_file_path)
@@ -1627,13 +1801,15 @@ class MainWindow(QMainWindow):
             return
         path = ensure_document_extension(path)
             
-        password = self.prompt_password("Encrypt File", show_strength=True)
-        if not password:
-            return
-
         try:
+            password = self.file_credential("Encrypt File", show_strength=True, new_file=True)
+            if not password:
+                return
             html = self.current_editor.toHtml()
             self._run_file_task(lambda: write_encrypted_document(path, html, password))
+            self.open_documents[self.tabs.currentIndex()]['protection_mode'] = (
+                'organization' if isinstance(password, tuple) else 'password'
+            )
             password = None
             self.set_current_file_path(path)
             self.current_editor.document().setModified(False)
@@ -1695,6 +1871,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(100, self.current_editor.clear)
         self.set_current_file_path(None)
         self.set_current_password(None)
+        self.open_documents[self.tabs.currentIndex()]['protection_mode'] = None
         self.current_editor.document().setModified(False)
         self.tabs.setCurrentIndex(self.tabs.currentIndex())  # Refresh tab
         QMessageBox.information(self, "Clear Editor", "Editor contents cleared from the current session.")
@@ -1770,6 +1947,7 @@ class MainWindow(QMainWindow):
         self.set_theme(new_theme)
 
     def set_theme(self, mode):
+        self.setProperty("ericaTheme", mode)
         close_icon_path = resource_path("closebutton.png").replace("\\", "/")
         dark_theme = f"""
             QMainWindow {{
@@ -1976,8 +2154,26 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         menubar.setNativeMenuBar(False)
 
+        security_menu = menubar.addMenu("Security")
+        mode_menu = security_menu.addMenu("Mode for New Files")
+        self.mode_group = QActionGroup(self)
+        self.mode_group.setExclusive(True)
+        self.password_mode_action = QAction("Password Mode", self, checkable=True)
+        self.organization_mode_action = QAction("Organization Token Mode", self, checkable=True)
+        for action, mode in ((self.password_mode_action, "password"),
+                             (self.organization_mode_action, "organization")):
+            self.mode_group.addAction(action)
+            mode_menu.addAction(action)
+            action.triggered.connect(lambda checked, mode=mode: self.set_encryption_mode(mode))
+        self._refresh_mode_actions()
+        configure_action = security_menu.addAction("Configure Organization Tokens...")
+        configure_action.triggered.connect(self.configure_organization_tokens)
+        forget_action = security_menu.addAction("Remove Local Organization Tokens...")
+        forget_action.triggered.connect(self.forget_organization_tokens)
+
         # File Menu
         file_menu = menubar.addMenu("File")
+        menubar.insertMenu(security_menu.menuAction(), file_menu)
 
         new_action = QAction("New", self)
         new_action.setShortcut("Ctrl+N")
@@ -2279,6 +2475,11 @@ class MainWindow(QMainWindow):
     def init_status(self):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
+
+        self.mode_label = QLabel()
+        self.mode_label.setToolTip("Existing files keep their protection mode. Use Save As to a new filename to convert.")
+        self.status.addPermanentWidget(self.mode_label)
+        self._refresh_mode_actions()
         
         self.time_label = QLabel()
         self.status.addPermanentWidget(self.time_label)
@@ -2296,8 +2497,9 @@ class MainWindow(QMainWindow):
             "Erica empowers users with local-only, secure text encryption — designed\n"
             "to be simple, elegant, and professionally hardened.\n\n"
             f"🔐 Key Features in v{APP_VERSION}:\n"
-            "• AES-256 encryption with HMAC-SHA256 integrity validation\n"
-            "• Secure auto-lock timer with user-controlled duration\n"
+            "• Password Mode: AES-256 encryption with HMAC-SHA256 integrity\n"
+            "• Organization Token Mode with authenticated AES-GCM encryption\n"
+            "• Idle shutdown timer (lock Windows to protect automatic organization access)\n"
             "• Clipboard auto-clear after 5 minutes\n"
             "• Files saved as read-only with manual unlock option\n"
             "• Password strength meter during encryption setup\n"

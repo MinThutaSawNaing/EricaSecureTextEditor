@@ -1,5 +1,6 @@
 import gc
 import os
+import sys
 import threading
 import time
 import unittest
@@ -117,6 +118,7 @@ class InteractiveTaskTests(unittest.TestCase):
             self.assertEqual(erica_tasks.run_background_task(self.parent, lambda: index), index)
         self.assertIsNone(self.app.activeModalWidget())
 
+    @unittest.skipUnless(sys.version_info >= (3, 11), "ExceptionGroup requires Python 3.11+")
     def test_exception_group_does_not_retain_nested_secret_frames(self):
         class Secret:
             pass

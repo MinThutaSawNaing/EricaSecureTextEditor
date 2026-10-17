@@ -1,268 +1,228 @@
 # Erica Secure Text Editor
 
-Erica Secure Text Editor is a Windows desktop application for writing, encrypting, and managing sensitive notes entirely on the local machine. It combines a rich-text editing workflow with file-level encryption, recovery safeguards, and packaged desktop delivery through PyQt6, PyInstaller, and Inno Setup.
+A local-first Windows desktop editor for encrypted notes and rich-text documents.
+Erica combines tabbed editing, password or shared organization-token protection,
+encrypted image files, and local workspace recovery. The interface uses Python
+and PyQt6; Rust provides organization security, native storage, and word counting.
 
-This project is a strong portfolio example of applied desktop engineering: secure local data handling, UI development, state management, packaging, and automated test coverage in a single Python codebase.
+## Download 3.6
 
-## Download
+**Windows x64.** Packaged builds do not require Python or Rust to be installed.
 
-Download the Windows builds directly from the committed [`release/`](./release/) folder:
+| Download | Purpose |
+| --- | --- |
+| [Windows installer](./release/EricaSecureTextEditorSetup_3.6.exe?raw=true) | Recommended installation and upgrades |
+| [Standalone executable](./release/EricaSecureTextEditor.exe?raw=true) | Run without installation |
+| [SHA-256 checksums](./release/SHA256SUMS.txt?raw=true) | Check the downloaded artifacts |
 
-- Recommended installer: [Download Erica 3.5 for Windows](./release/EricaSecureTextEditorSetup_3.5.exe?raw=true)
-- Portable executable: [Download without installation](./release/EricaSecureTextEditor.exe?raw=true)
-- Integrity checks: [`SHA256SUMS.txt`](./release/SHA256SUMS.txt)
+The [`release/`](./release/) folder contains only the current release. See
+[release notes and artifact details](./release/README.md); older binaries remain
+in Git history, not in the current download folder.
 
-The installer is recommended: fresh installations default to the current user without administrator access, with an all-users option when needed. It adds a Start Menu shortcut, offers an optional desktop shortcut, and registers `.erica` Open With support without changing your default app. Existing installations retain their scope and directory when detected.
+The installer defaults to the current user, with an optional all-users install.
+It creates a Start Menu shortcut, offers a desktop shortcut, and registers
+`.erica` in **Open with** without changing the default app. Upgrades retain the
+existing installation scope and directory.
 
-### What's new in 3.5
+**Unsigned software:** Windows may display an unknown-publisher warning. Verify
+the source and download location before running. Checksums detect changed bytes;
+they do not authenticate the publisher or replace a digital signature.
 
-- Familiar uncluttered layout: new formatting tools live under **right-click > Font, Paragraph, and Table**, not extra toolbars.
-- Font family/size, text colour/highlight, paragraph alignment, lists, and table styles/properties are available without changing the main window layout.
-- Cached incremental word counts and background encryption/storage/recovery improve responsiveness.
-- Windows permission subprocesses no longer flash console windows.
-- Encryption format and legacy document compatibility are unchanged.
+## What's new in 3.6
 
-### Table editing fixes included
+- Rust-backed organization-token encryption and Windows-protected token storage.
+- A compact, theme-aware setup dialog with explicit 16-digit input warnings.
+- Automatically generated, read-only five-digit checks with optional Copy buttons.
+- Newly generated tokens are shown immediately, with a screen-privacy reminder.
+- Existing password files and the organization version-1 file format remain compatible.
 
-- Tables use the editor width and put the cursor in the first cell after insertion.
-- Row and column deletion keep the cursor in the table; deleting the last row or column removes the table.
-- **Format → Tables → Delete Current Table** removes a whole table without using the clipboard.
-- Undo/redo is enabled, and empty-table documents are included in recovery snapshots.
+## Features
 
-These builds are not code-signed; a SHA-256 checksum checks file integrity but does not replace publisher authentication. Windows may show an unknown-publisher warning.
+- Multiple tabs, rich text, links, lists, tables, undo/redo, and zoom.
+- Right-click **Font**, **Paragraph**, and **Table** menus for editing controls.
+- Password-protected `.erica` documents; legacy password `.enc` files are supported.
+- Shared organization-token mode for documents and encrypted `.eimg` images.
+- Recent files, session reopening, light/dark themes, and incremental word counts.
+- Background encryption, storage, and periodic encrypted recovery snapshots.
 
-## Project Snapshot
+## Get started
 
-### Responsiveness improvements included in 3.5
+### Password-protected documents
 
-- Cursor navigation reads a cached word total instead of converting and splitting the whole document. Rust counts words only in changed Qt text blocks, retaining Python-compatible Unicode whitespace semantics.
-- Document/image encryption, decryption, and storage operations run on joined background workers. A non-cancellable busy dialog prevents edits during an explicit operation while the interface continues processing events.
-- Periodic encrypted recovery runs in the background with one job at a time; unchanged successful snapshots are not rewritten. Clearing recovery invalidates pending work, and shutdown waits before capturing the final workspace.
-- Windows permission commands use `CREATE_NO_WINDOW` so background file hardening does not flash a console window.
+1. Install Erica or launch the standalone executable.
+2. Choose **File > New** (`Ctrl+N`) and write your document.
+3. Under **Security > Mode for New Files**, select **Password Mode**.
+4. Choose **File > Save Encrypted** (`Ctrl+S`), select a filename, and enter a
+   strong, unique password. New documents use `.erica`.
+5. Use **File > Open Encrypted** (`Ctrl+O`) to reopen a document with its password.
 
-The encrypted-file format, password derivation, authentication checks, synchronized Rust writes, and existing destination DACL preservation are unchanged. This is not a custom cryptography implementation. Large rich-text documents still require Qt layout and HTML capture on the GUI thread, and shutdown waits for recovery to finish.
+Keep passwords in a trusted password manager. There is no password-reset service
+or decryption backdoor. Recovery snapshots are not a substitute for file backups.
 
-The downloads above include these improvements. `release/` contains only the current portable executable, installer, matching installer source, and checksums. Generated packaging stages are removed after a successful build.
+### Organization-token setup
 
-Measured on the local Windows/offscreen Qt test harness: 100 cursor moves in a 100,000-word, multiline document took about 1,144 ms before this change and 1.6 ms afterward. This measures the cursor/status hot path, not overall application speed. Unchanged recovery checks on a one-million-character workspace took about 0.04 ms after adding the revision/change-epoch cache; changed snapshots still require GUI-thread HTML capture.
+Organization mode is **software shared-key encryption, not a hardware HSM**.
+It needs no hardware device or external provisioning service. Each authorized
+Windows account must be configured with the same two tokens in the same order.
 
-- Built with Python and PyQt6 for a native-style desktop experience
-- Uses AES-based encrypted file storage with HMAC integrity validation
-- Keeps user data local with no cloud sync, account system, or backend dependency
-- Supports secure editing workflows such as password-protected saves, clipboard clearing, and idle lock behavior
-- Includes Windows packaging for executable and installer distribution
-- Backed by unit tests for encryption, recovery, session metadata, save flows, timeout logic, and table editing behavior
+1. Open **Security > Configure Organization Tokens**.
+2. For a new organization, choose **Generate a new organization token pair**.
+   Each token must contain exactly **16 ASCII digits (`0–9`)**. The tokens must
+   differ; leading zeros and token order are significant.
+3. Generated tokens are shown automatically and **Show tokens** is checked.
+   Generate only on a private screen; uncheck it to hide the tokens. Manually
+   entered tokens are hidden by default and can also be shown with this control.
+4. Erica generates an exactly **five-digit** check for each valid token in Rust.
+   Checks are read-only and preserve leading zeros; do not enter checks manually.
+   Invalid input displays an inline warning, clears the check, and disables Copy.
+5. Back up both ordered tokens and their checks in approved secret storage.
+   **Copy** beside a check is optional and copies only that check, not the token.
+   Clipboard history or synchronization may retain it. Keep checks private too.
+6. On another authorized account, enter the original pair and compare the generated
+   checks against the trusted backup. **Do not generate a new pair to join an
+   existing organization.** Distribute tokens over a secure channel, not with files.
+7. Confirm **I have securely backed up both tokens and checks**, then choose
+   **Save**. Successful setup selects Organization Token Mode. Changing either
+   token updates its check and resets the backup confirmation.
 
-## Why This Project Stands Out
+Save and open files normally after enrollment. Matching organization files open
+without per-file password prompts. Password files still request their passwords,
+regardless of the selected mode for new files.
 
-Erica is more than a text editor. It demonstrates the ability to design and ship a complete product with attention to security, usability, and deployment.
+### Switching modes and handling images
 
-From a recruiter or hiring-manager perspective, this repository highlights:
+- **Security > Mode for New Files** controls new files and **Save As Encrypted**.
+  A normal save, including a tab-close save, retains a file's existing protection.
+- To convert an open document, select the desired mode and use **File > Save As
+  Encrypted** (`Ctrl+Shift+S`) with a **new filename**. Cross-mode overwrites and
+  organization overwrites using a different token pair are refused.
+- **File > Encrypt Image** creates an encrypted `.eimg` file using the selected
+  mode. **File > Decrypt Image** writes a decrypted image; protect that output.
+- **Security > Remove Local Organization Tokens** removes local enrollment and
+  returns new files to Password Mode. It does not revoke tokens elsewhere.
 
-- Desktop application architecture in Python
-- Secure file handling and local-first design thinking
-- GUI development with custom workflows and multi-tab editing
-- State persistence for theme, recent files, and session recovery
-- Practical product engineering with installer/build tooling
-- Automated testing for critical application behaviors
+## Security model and limitations
 
-## Core Features
+### Encryption and compatibility
 
-### Right-click font and table controls
+| Protection | Implementation |
+| --- | --- |
+| Password files | AES-256-CBC with PKCS#7 padding and HMAC-SHA256 over salt, IV, and ciphertext; PBKDF2-HMAC-SHA256, 100,000 iterations, 32-byte key |
+| Organization files | AES-256-GCM; scrypt (`N=32768`, `r=8`, `p=1`, 32-byte key) over the domain-separated, ordered token pair |
 
-- The main window retains its familiar menu, tabs, and editor layout, without extra formatting toolbars. **Right-click in the editor** for the new controls.
-- **Font:** choose a font or point size, toggle bold/italic/underline/strikethrough, and set text colour or highlighting. Select text to format it; without a selection, font controls affect what you type next.
-- **Paragraph:** align text or add bulleted and numbered lists. Standard undo/redo and clipboard commands remain in the right-click menu.
-- **Table:** insert a table anywhere using one dialog with rows, columns, style, and an optional repeating header. Right-click inside a table for row/column controls, delete, merge/split, appearance, table properties, equal columns, fit width, cell shading, and table/row/column selection. Merge requires adjacent selected cells; split is enabled for a merged cell.
-- Existing formatting menus and shortcuts remain available, including **Ctrl+B**, **Ctrl+I**, and **Ctrl+U**.
+Password encryption uses a fresh 16-byte salt and 16-byte IV; authentication is
+checked before decryption. Organization encryption uses a fresh 16-byte salt and
+12-byte nonce. Its `ERICAORG` version-1 envelope authenticates the complete header
+and includes a 16-byte GCM tag. Tokens and checks are not stored in that header.
 
-These are rich-text editing tools, not a full Microsoft Word replacement: `.docx` import/export and page-layout editing are not included. Tables and fonts continue to be stored as HTML inside Erica's existing encrypted document format.
+The Rust migration preserves organization ciphertext and DPAPI token-blob formats;
+existing files do not need rewriting. Older password-only Erica builds cannot
+open organization files. Password encryption and its legacy format are unchanged.
 
-Table styles preserve mixed font families and sizes. Switching back to **Plain** restores prior colours/weight while the document stays open. After saving and reopening, Plain removes the recognised Erica style colours and header bold; the original pre-style colours/weight are not retained in HTML. Undo remains available for the style change.
+If upgrading from source builds with 12-character hexadecimal checks, regenerate
+the new five-digit checks from the **same tokens** and update enrollment backups.
+Rebuild the DLL: organization ABI is now 2; storage ABI remains 1.
 
-### Security
+- Anyone with both tokens can decrypt files protected by that pair. There is no
+  per-user identity, hardware isolation, audit trail, or remote revocation.
+- Lost tokens cannot be recovered by Erica. Replacing tokens does not re-encrypt
+  existing files; retain old pairs until files have been deliberately migrated.
+- Five-digit checks are short typo checks, **not authentication or standard HSM
+  key check values**. Collisions are possible: different tokens can share a check.
+- Checks are derived directly from individual tokens and allow fast offline guess
+  testing. Do not publish them or store them alongside distributed documents.
+  Use generated random tokens, not dates, repeated digits, or other patterns.
+- Two random 16-digit decimal tokens provide about 106 bits of combined input
+  entropy before disclosure; AES-256 does not make them 256-bit secrets.
 
-- Encrypted document save and open flow
-- New secure documents save with the `.erica` extension while legacy `.enc` files remain supported
-- HMAC-SHA256 integrity checks to detect tampering or corruption
-- Password prompt and password strength feedback during secure save flows
-- Idle timeout with auto-lock style shutdown behavior
-- Clipboard auto-clear for copied sensitive content
-- Read-only protection applied to encrypted output files after save
-- Encrypted recovery snapshots for unsaved work
-- Recovery key is protected with Windows DPAPI before being written to local config storage
-- External links from note content are restricted to `http` and `https`
+### Local storage and recovery
 
-### Editor Experience
+Organization tokens are encrypted with **Windows DPAPI for the current user** in
+`%APPDATA%\SecureText\config.json`; check values are not persisted there. There is
+no plaintext token-storage fallback. Copying config files to another account or
+PC is not an enrollment method, and the standalone executable does not make
+account-bound settings portable.
 
-- Multi-tab document editing
-- Rich-text formatting with bold, italic, font sizing, lists, and links
-- Table insertion and table editing operations
-- Zoom controls and status updates
-- Theme toggle support
-- Recent files tracking
-- Reopen last session support
+Unsaved work is periodically stored in `recovery.enc`, encrypted with a separate
+local recovery key protected by current-user DPAPI. A startup prompt offers to
+restore a usable snapshot. Account/profile loss or loss of the protected key may
+make recovery unavailable. Back up encrypted documents and credentials separately.
 
-### Secure Asset Handling
+Recovery is tied to the Windows account, **not** the document password or token
+pair. Removing tokens does not erase decrypted tabs or their recovery snapshots.
+Software running as the signed-in user may be able to unprotect local keys and
+tokens. Decrypted content also exists in memory; Python strings and bytes cannot
+be reliably forensically erased.
 
-- Encrypt image files to protected payloads
-- Decrypt encrypted image payloads back to their original format
+Idle shutdown, clipboard clearing, file permissions, and read-only attributes are
+convenience safeguards, not a security boundary. Organization files can reopen
+without a password after idle shutdown. **Lock your Windows session** when away;
+clipboard history, malware, screenshots, and a compromised account remain risks.
 
-### Distribution
+This project has not undergone an independent security audit. It does not claim
+FIPS validation, hardware-backed key custody, or enterprise identity enforcement.
 
-- PyInstaller spec for generating a Windows executable
-- Inno Setup script for creating a Windows installer
-- Installer registers Erica in Windows `Open with` for `.erica` documents
-- `release/` folder for distributable Windows artifacts
-- Application icon and packaged UI assets included in the repo
+## Run from source
 
-## Tech Stack
-
-- Python 3
-- PyQt6
-- Rust (dependency-free native storage and changed-block word counts)
-- cryptography
-- PyInstaller
-- Inno Setup
-- unittest
-
-## Architecture Highlights
-
-The application is implemented in a single primary desktop entrypoint, [`erica_secure_text_editor.py`](./erica_secure_text_editor.py), which combines:
-
-- encryption and decryption utilities
-- configuration and session persistence
-- secure recovery snapshot handling
-- rich-text editor actions
-- multi-tab document management
-- Windows-oriented desktop packaging support
-
-Supporting project files:
-
-- [`erica_secure_text_editor.spec`](./erica_secure_text_editor.spec) for executable builds
-- [`erica_secure_text_editor.iss`](./erica_secure_text_editor.iss) for installer creation
-- [`release/README.md`](./release/README.md) for release artifact notes
-- `erica_formatting.py` and `erica_tables.py` for context-menu editing commands
-- `erica_wordcount.py` for cached per-block word counts
-- `erica_tasks.py` for joined background tasks
-- `erica_storage.py` and `native/erica_storage/` for native storage and word counting
-- `test_*.py` for automated verification
-
-## Quick Start
-
-### 1. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Build the Rust storage module
-
-Install a 64-bit Windows Rust MSVC toolchain and Visual Studio C++ Build Tools, then run:
+Use **64-bit Windows**, **Python 3.10+**, a stable **Rust MSVC x64 toolchain**,
+and **Visual Studio C++ Build Tools with a Windows SDK**. Install these tools
+before building. Run the following in PowerShell from the repository root:
 
 ```powershell
-& 'D:\Erica Text Editor\EricaSecureTextEditor\build_native.ps1'
-```
-
-This runs the native tests and builds `erica_storage.dll` offline with no third-party Rust dependencies. Rebuild it after changing the native source. The DLL is required for running from source; there is no silent Python storage fallback. Packaged applications bundle it automatically.
-
-### 3. Run the application
-
-```bash
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+.\build_native.ps1 -FetchDependencies
 python erica_secure_text_editor.py
 ```
 
-## Build for Windows
+The first native build fetches dependencies pinned by `Cargo.lock`, runs native
+tests and Clippy when available, and installs the release DLL beside the source.
+Later builds can omit `-FetchDependencies` and work offline. Rebuild after native
+changes. The DLL is required; there is no silent Python fallback for native
+storage or organization security.
 
-For the complete test, executable, installer, and checksum pipeline, run:
+### Tests
+
+After building the DLL, run the Python suite without opening UI windows:
 
 ```powershell
-& 'D:\Erica Text Editor\EricaSecureTextEditor\build_windows.ps1'
+$env:QT_QPA_PLATFORM = 'offscreen'
+python -B -m unittest discover -s . -p 'test_*.py' -v
+Remove-Item Env:QT_QPA_PLATFORM
 ```
 
-Requires 64-bit Windows Python with the dependencies and PyInstaller installed, the Windows Rust MSVC toolchain with C++ Build Tools, plus Inno Setup 6. The script builds/tests the native module first and does not install dependencies or upload files. Override `-PythonExe` or `-IsccExe` if necessary.
+`build_native.ps1` runs native tests in the normal debug profile. For faster
+cryptographic test execution after compilation, optionally run
+`cargo test --release --manifest-path native/erica_storage/Cargo.toml --offline --locked`.
 
-After success, the pipeline removes its packaging stage, duplicate portable build, and older installers. Only current downloads remain in `release/`. Close running portable builds before rebuilding. Native Cargo caches remain reusable and can be removed with `cargo clean` when no longer needed.
+### Package Windows builds
 
-### Create the executable
+Install PyInstaller in the Python environment and Inno Setup 6 separately. Use
+your **actual installed compiler path**; `-IsccExe` overrides the script default:
 
-```bash
-pyinstaller erica_secure_text_editor.spec
+```powershell
+python -m pip install pyinstaller
+.\build_windows.ps1 -IsccExe 'C:\path\to\Inno Setup 6\ISCC.exe'
 ```
 
-The generated executable is placed in `dist/`.
+The script tests/builds the native DLL, runs Python tests, packages the executable
+and installer, copies matching installer source, and writes `release/SHA256SUMS.txt`.
+It keeps only the current installer and removes successful temporary staging and
+duplicate executable output. It does not install dependencies, run the installer,
+sign binaries, upload artifacts, or push Git changes.
 
-### Create the installer script output
+## Source layout
 
-Use the included Inno Setup script after the executable has been built:
+- [`erica_secure_text_editor.py`](./erica_secure_text_editor.py): desktop entry
+  point, document workflows, password encryption, and recovery encryption.
+- [`erica_organization.py`](./erica_organization.py) and
+  [`erica_organization_ui.py`](./erica_organization_ui.py): native API adapter and setup UI.
+- [`native/erica_storage/`](./native/erica_storage/): Rust organization validation,
+  generation, checks, crypto, DPAPI, organization I/O, atomic storage, and word counts.
+- `erica_formatting.py`, `erica_tables.py`, `erica_tasks.py`, and
+  `erica_wordcount.py`: editing controls, background workers, and count integration.
 
-```bash
-iscc erica_secure_text_editor.iss
-```
+## License
 
-The installer is written to `release/` as `EricaSecureTextEditorSetup_3.5.exe`.
-
-### Release folder
-
-The `release/` folder is intended to hold the Windows deliverables for sharing or publishing:
-
-- `EricaSecureTextEditor.exe`
-- `EricaSecureTextEditorSetup_3.5.exe`
-- `erica_secure_text_editor.iss`
-- `SHA256SUMS.txt`
-
-This keeps the checked-in distribution artifacts separate from the transient `dist/` and `build/` directories.
-
-## Run Tests
-
-```bash
-python -m unittest discover -v
-```
-
-Current automated coverage includes:
-
-- encryption and decryption roundtrip behavior
-- recent files and last-session persistence
-- encrypted recovery snapshot creation and restore validation
-- recovery-key migration and protected local storage behavior
-- save and re-save behavior for encrypted files
-- safe external link allow/block behavior
-- idle-timeout shutdown logic
-- table creation, merge, split, row, and column operations
-- native file replacement, read-only files, Unicode paths, failed commits, and malformed encrypted envelopes
-
-## Rust storage integration
-
-The source now uses a small dependency-free Rust DLL for same-directory temporary-file writes and legacy encrypted-envelope structure validation. Document saves, recovery snapshots, configuration, and image output use this module. Python's established `cryptography` dependency still performs encryption and authentication; the existing file format is unchanged. A structural validation pass is not authentication.
-
-Writes synchronize the temporary file before replacement and avoid truncating the previous file on pre-commit failure. Existing destination DACL policy and protection status are copied to the empty temporary file before any bytes are written; a security-copy error fails closed. New files inherit the trusted parent directory policy. Owner, audit settings, integrity labels, alternate streams, and other metadata are not preserved. This is not a guarantee against power loss, malicious concurrent filesystem changes, or forensic recovery. Parents must already exist and be trusted. Native error codes propagate to the caller. Tab-close saves no longer retain passwords in document state.
-
-Rust storage replacement improves storage safety; the separately implemented Rust changed-block counter, cached totals, and joined background workers improve responsiveness. These changes are included in the 3.5 downloads. Encryption is not streaming, and DPAPI protection continues to use the existing Python/Windows integration.
-
-## Security Notes
-
-- Encryption is performed locally on the device
-- The app does not require user accounts or network services
-- Passwords are not persisted as part of a remote authentication system or retained in document state after use
-- Integrity validation is built into the encrypted file format
-- Recovery snapshots are encrypted and their local recovery key is protected with Windows DPAPI on Windows systems
-- Sensitive local metadata files are hardened to the current user where supported by the host OS
-- “Clear Editor Contents” removes text from the current session but should not be treated as a guaranteed forensic memory wipe
-
-This project is designed to reduce exposure by keeping note creation, encryption, and storage on the user-controlled machine.
-
-## Ideal Portfolio Talking Points
-
-If you are presenting this project in a CV, portfolio, or interview, the strongest angles are:
-
-- Built a secure local-first desktop application instead of a basic CRUD app
-- Implemented encrypted storage and integrity validation for user documents
-- Designed user-facing security features without sacrificing usability
-- Packaged the product into a distributable Windows desktop application
-- Added automated tests around critical workflows and regression-prone logic
-
-## Author
-
-Developed by **Min Thuta Saw Naing (Eric)**.
-
-Erica reflects a practical blend of software engineering, user experience, and security-minded product development.
+[MIT License](./LICENSE). Copyright © 2026 Min Thuta Saw Naing Eric.

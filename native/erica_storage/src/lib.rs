@@ -4,6 +4,8 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+mod organization;
+
 const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_INTERNAL_ERROR: u32 = 1359;
 #[cfg(not(windows))]

@@ -1,8 +1,8 @@
 """Small, typed interface to the required Windows Rust storage library.
 
-Storage payloads and UTF-16 word-count buffers cross this seam. Encryption and
-password handling stay with cryptography. No Python write fallback silently
-bypasses native guarantees.
+Storage payloads and UTF-16 word-count buffers cross this seam. Legacy password
+handling stays with cryptography; organization encryption uses the Rust exports
+bound by erica_organization. No Python write fallback bypasses native guarantees.
 """
 
 import ctypes

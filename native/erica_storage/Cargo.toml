@@ -7,5 +7,17 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[dependencies]
+aes-gcm = { version = "=0.10.3", default-features = false, features = ["aes", "alloc", "zeroize"] }
+# Enable upstream key-schedule/hash-state wiping through Cargo feature unification.
+aes = { version = "0.8", features = ["zeroize"] }
+ghash = { version = "0.5", features = ["zeroize"] }
+polyval = { version = "0.6", features = ["zeroize"] }
+scrypt = { version = "0.11", default-features = false }
+sha2 = "0.10"
+zeroize = "1"
+base64 = "0.22"
+subtle = "2"
+
 [profile.release]
 panic = "unwind"

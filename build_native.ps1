@@ -1,13 +1,15 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Tests and builds the dependency-free Rust storage DLL using installed tools.
+Tests and builds the Rust storage and organization DLL using installed tools.
 .NOTES
-No dependencies are installed or downloaded. Cargo.lock must already exist.
+Cargo.lock must already exist. Use -FetchDependencies once on a new machine to
+download the locked Rust dependencies. Tests/builds themselves remain offline.
 #>
 [CmdletBinding()]
 param(
-    [string] $CargoExe = 'cargo.exe'
+    [string] $CargoExe = 'cargo.exe',
+    [switch] $FetchDependencies
 )
 
 Set-StrictMode -Version Latest
@@ -38,6 +40,9 @@ foreach ($file in @($manifest, $lock)) {
 
 Push-Location -LiteralPath $crate
 try {
+    if ($FetchDependencies) {
+        Invoke-Checked $cargo @('fetch', '--manifest-path', $manifest, '--locked')
+    }
     $common = @('--manifest-path', $manifest, '--target-dir', $target, '--offline', '--locked')
     Invoke-Checked $cargo (@('test') + $common)
 
@@ -56,8 +61,23 @@ try {
     if ((Get-Item -LiteralPath $dll).Length -eq 0) {
         throw "Cargo produced an empty DLL: $dll"
     }
-    Copy-Item -LiteralPath $dll -Destination $installedDll -Force
-    Write-Host "Native storage DLL installed: $installedDll"
+    # Windows locks a loaded DLL. Avoid an unnecessary replacement when a
+    # running source application already uses exactly the freshly built bytes.
+    $unchanged = (Test-Path -LiteralPath $installedDll -PathType Leaf) -and
+        ((Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash -eq
+         (Get-FileHash -LiteralPath $installedDll -Algorithm SHA256).Hash)
+    if ($unchanged) {
+        Write-Host "Native storage DLL already up to date: $installedDll"
+    }
+    else {
+        try {
+            Copy-Item -LiteralPath $dll -Destination $installedDll -Force
+        }
+        catch {
+            throw "Cannot update native DLL at $installedDll. Close running Erica instances and retry. $($_.Exception.Message)"
+        }
+        Write-Host "Native storage DLL installed: $installedDll"
+    }
 }
 finally {
     Pop-Location

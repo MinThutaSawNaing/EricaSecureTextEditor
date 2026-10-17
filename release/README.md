@@ -1,18 +1,50 @@
-# Erica 3.5 - current Windows downloads
+# Erica 3.6 — Windows downloads
 
-Only the current release is kept here:
+This folder contains only the current Windows x64 release. The Python runtime
+and native backend are included; no development tools are required to run it.
 
-- [Windows installer](./EricaSecureTextEditorSetup_3.5.exe?raw=true) - recommended; updates the installed application and shortcuts.
-- [Portable application](./EricaSecureTextEditor.exe?raw=true) - launch without installation.
-- [SHA-256 checksums](./SHA256SUMS.txt) - verifies bytes, not publisher identity.
-- `erica_secure_text_editor.iss` - exact installer source used for this release.
+| Artifact | Purpose |
+| --- | --- |
+| [Windows installer](./EricaSecureTextEditorSetup_3.6.exe?raw=true) | Recommended installation and upgrades |
+| [Standalone executable](./EricaSecureTextEditor.exe?raw=true) | Run without installation |
+| [SHA-256 checksums](./SHA256SUMS.txt?raw=true) | Hashes for both executables and the matching installer source |
+| [Installer source](./erica_secure_text_editor.iss) | Inno Setup script used for this release |
 
-Version 3.5 keeps the familiar uncluttered layout. Right-click in the editor for **Font**, **Paragraph**, and **Table** controls. It also includes incremental word counts, background encryption/storage/recovery, and suppression of permission-command console flashes. Encryption format and legacy document compatibility are unchanged.
+## Release highlights
 
-Fresh installs default to the current user, with optional all-users installation and an optional desktop shortcut. Existing installation scope and directory are retained. The installer offers `.erica` Open With support without changing the default application. Binaries are unsigned; Windows may display an unknown-publisher warning.
+Version 3.6 adds Rust-backed organization-token security and a compact,
+theme-aware setup dialog. Each token requires exactly 16 digits. Five-digit checks
+are generated automatically, read-only, and optionally copied; invalid input shows
+an inline warning. Generated tokens are shown immediately—keep the screen private.
+Existing password files and organization version-1 encrypted files remain compatible.
+
+Organization mode is software shared-key encryption, **not a hardware HSM**.
+Read the [setup instructions and security limitations](../README.md) before use.
+
+## Installation and verification
+
+Fresh installations default to the current user; all-users installation and a
+desktop shortcut are optional. Upgrades retain the existing scope and directory.
+The installer registers `.erica` **Open with** support without changing the default app.
+
+**Binaries are unsigned.** Windows may display an unknown-publisher warning.
+Compare downloaded file hashes with `SHA256SUMS.txt`, for example:
+
+```powershell
+Get-FileHash .\EricaSecureTextEditorSetup_3.6.exe -Algorithm SHA256
+```
+
+A matching hash verifies bytes, not publisher identity. Trust in the checksum
+depends on trust in the repository and the downloaded manifest.
 
 ## Rebuild
 
-From the repository root on Windows, run `build_windows.ps1` with the installed Python/PyQt6/cryptography/PyInstaller, Rust MSVC toolchain, C++ Build Tools, and Inno Setup 6. It tests and builds the native DLL, runs Python tests, packages both executables, and generates checksums. It does not install, upload, or push anything.
+See [source prerequisites and packaging commands](../README.md#package-windows-builds).
+`build_windows.ps1` tests the native and Python code, packages both executables,
+copies the matching installer source, and generates checksums for those artifacts.
+It does not install, sign, upload, or push anything. Supply `-IsccExe` with the
+actual installed Inno Setup compiler path if it differs from the script default.
 
-Successful builds remove their temporary packaging stage and duplicate `dist` executable, and retain only the current installer here. Old binaries remain accessible in Git history, not in this folder.
+Successful builds keep only the current installer here and remove temporary
+packaging output. **Old binaries remain in Git history**, not as live downloads
+in this folder. Source is distributed under the [MIT License](../LICENSE).
